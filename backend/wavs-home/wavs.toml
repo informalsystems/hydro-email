@@ -11,8 +11,8 @@ gas_denom = "untrn"
 
 [default.chains.cosmos.neutron-1]
 bech32_prefix = "neutron"
-rpc_endpoint = "https://rpc-lb.neutron.org"
-grpc_endpoint = "http://grpc-lb.neutron.org:80"
+rpc_endpoint = "https://rpc.neutron.solva.solutions:443"
+#grpc_endpoint = "http://grpc-lb.neutron.org:80"
 gas_price = 0.0053
 gas_denom = "untrn"
 

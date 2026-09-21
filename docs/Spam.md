@@ -1,3 +1,1 @@
-Remember to make sure that emails do not arrive in spam.
-
-Simple way is to setup a gmail filter for the `To` address used by Hydro Email, and mark it as "Never send to spam".
+Remember to make sure that emails sent to your AgentMail inbox do not get filtered as spam by the sender's own mail provider (e.g. if senders are on Gmail, they can set up a filter for the `To` address used by Hydro Email and mark it as "Never send to spam").
