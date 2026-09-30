@@ -48,7 +48,7 @@ vars:
 
   # Deployment
   TESTNET_CHAIN_KEY: "cosmos:pion-1"
-  MAINNET_CHAIN_KEY: "cosmos:neutron-1"
+  MAINNET_CHAIN_KEY: "cosmos:cosmoshub-4"
   LOCAL_CHAIN_KEY: "dev:local"
 
   # neither env vars nor any dynamic vars are available at this stage, so we have to read .env manually
