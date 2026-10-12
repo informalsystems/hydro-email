@@ -54,7 +54,10 @@ pub async fn read_next_email_imap(config: ImapConfig) -> AppResult<Option<EmailM
         .next()
         .ok_or(AppError::FailedToFetchEmail(latest_uid))?;
 
-    Ok(Some(
-        EmailMessage::parse_imap(&fetch).map_err(AppError::AnyMessageParse)?,
-    ))
+    let message = EmailMessage::parse_imap(&fetch).map_err(AppError::AnyMessageParse)?;
+
+    // AgentMail doesn't set \Seen flag on a BODY[] fetch, so mark it as \Seen to avoid processing the same email again
+    session.uid_store(latest_uid.to_string(), "+FLAGS (\\Seen)")?;
+
+    Ok(Some(message))
 }

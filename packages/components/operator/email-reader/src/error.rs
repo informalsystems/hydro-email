@@ -44,4 +44,7 @@ pub enum AppError {
 
     #[error("slog: {0:?}")]
     Slog(#[from] sloggers::Error),
+
+    #[error("Not implemented: {0}")]
+    NotImplemented(&'static str),
 }

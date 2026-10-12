@@ -11,7 +11,6 @@ includes:
   contracts: ./taskfile/contracts.yml
   backend: ./taskfile/backend.yml
   test: ./taskfile/test.yml
-  oauth: ./taskfile/oauth.yml
   deploy: ./taskfile/deploy.yml
 
 tasks:

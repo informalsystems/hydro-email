@@ -3,7 +3,7 @@
 - [Hydro Email Kanban](https://github.com/orgs/Lay3rLabs/projects/14/views/1): project board.
 - [Tooling](docs/Tooling.md): setup your development environment.
 - [GettingStarted](docs/GettingStarted.md): get started developing and testing the code.
-- [Oauth](docs/Oauth.md): obtain oauth credentials.
+- [AgentMail](docs/AgentMail.md): set up the AgentMail inbox this reads mail from.
 - [LocalEmail](docs/LocalEmail.md): run local email server for testing. 
 - [Codebase](docs/Codebase.md): overview of the code structure
 

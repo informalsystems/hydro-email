@@ -19,7 +19,6 @@ But really, that's it... if you find yourself adding configuration somewhere els
   - [backend/chains](../backend/chains) - local-chain script for testing
   - [backend/docker](../backend/docker) - docker compose files (populated at runtime)
   - [backend/wavs-home](../backend/wavs-home) - WAVS home (operator and aggregator) 
-  - [backend/oauth-site](../backend/oauth-site) - Local oauth html file for access token retrieval
 - [docs/](../docs) - documentation
 - [packages/](../packages) - all Rust code packages
   - [packages/client](../packages/client) - client package

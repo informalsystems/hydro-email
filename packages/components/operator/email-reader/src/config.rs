@@ -14,24 +14,15 @@ pub struct ImapConfig {
 }
 
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
-pub struct GmailRestApiConfig {
-    pub client_id: String,
-    pub client_secret: String,
-    pub refresh_token: String,
+pub struct AgentMailRestApiConfig {
+    pub api_key: String,
+    pub inbox_id: String,
+    pub base_url: String,
 }
 
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub enum ImapCredentials {
-    Plain {
-        username: String,
-        password: String,
-    },
-
-    Gmail {
-        client_id: String,
-        client_secret: String,
-        refresh_token: String,
-    },
+    Plain { username: String, password: String },
 }
 
 #[derive(Default)]
@@ -72,16 +63,6 @@ impl ImapConfig {
                 let password = get_env_var("WAVS_ENV_IMAP_PASSWORD")?;
                 ImapCredentials::Plain { username, password }
             }
-            "gmail-imap" => {
-                let client_id = get_env_var("WAVS_ENV_GMAIL_CLIENT_ID")?;
-                let client_secret = get_env_var("WAVS_ENV_GMAIL_CLIENT_SECRET")?;
-                let refresh_token = get_env_var("WAVS_ENV_GMAIL_TOKEN")?;
-                ImapCredentials::Gmail {
-                    client_id,
-                    client_secret,
-                    refresh_token,
-                }
-            }
             _ => unreachable!(),
         };
 
@@ -114,15 +95,16 @@ impl ImapConfig {
     }
 }
 
-impl GmailRestApiConfig {
+impl AgentMailRestApiConfig {
     pub fn new() -> AppResult<Self> {
-        let client_id = get_env_var("WAVS_ENV_GMAIL_CLIENT_ID")?;
-        let client_secret = get_env_var("WAVS_ENV_GMAIL_CLIENT_SECRET")?;
-        let refresh_token = get_env_var("WAVS_ENV_GMAIL_TOKEN")?;
+        let api_key = get_env_var("WAVS_ENV_AGENTMAIL_API_KEY")?;
+        let inbox_id = get_env_var("WAVS_ENV_AGENTMAIL_INBOX_ID")?;
+        let base_url = get_env_var("WAVS_ENV_AGENTMAIL_BASE_URL")
+            .unwrap_or_else(|_| "https://api.agentmail.to/v0".to_string());
         Ok(Self {
-            client_id,
-            client_secret,
-            refresh_token,
+            api_key,
+            inbox_id,
+            base_url,
         })
     }
 }

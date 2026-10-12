@@ -440,9 +440,9 @@ async fn main() {
                     "WAVS_ENV_MAIL_CREDENTIAL_KIND",
                     "WAVS_ENV_IMAP_USERNAME",
                     "WAVS_ENV_IMAP_PASSWORD",
-                    "WAVS_ENV_GMAIL_CLIENT_ID",
-                    "WAVS_ENV_GMAIL_CLIENT_SECRET",
-                    "WAVS_ENV_GMAIL_TOKEN",
+                    "WAVS_ENV_AGENTMAIL_API_KEY",
+                    "WAVS_ENV_AGENTMAIL_INBOX_ID",
+                    "WAVS_ENV_AGENTMAIL_BASE_URL",
                 ]
                 .into_iter()
                 .map(|s| s.to_string())
