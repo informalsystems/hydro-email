@@ -261,7 +261,8 @@ async fn main() {
             let instantiate_msg = serde_json::json!({
                 "deposit_cap": "0",
                 "whitelist": [ctx.wallet_addr().await.unwrap().to_string()],
-                "subvaults": []
+                "subvaults": [],
+                "fee_config": null
             });
             let (contract_addr, tx_resp) = client
                 .contract_instantiate(
