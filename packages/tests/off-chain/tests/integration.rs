@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use app_tests_common::shared_tests::integration::test_integration;
 use app_utils::tracing::tracing_init;
 use off_chain_tests::client::{

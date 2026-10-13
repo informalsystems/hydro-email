@@ -31,6 +31,7 @@ impl CliContext {
             CliCommand::FaucetTap { args, .. } => args,
             CliCommand::InstantiateServiceHandler { args, .. } => args,
             CliCommand::InstantiateProxy { args, .. } => args,
+            CliCommand::InstantiateLocalControlCenter { args, .. } => args,
             CliCommand::InstantiateUserRegistry { args, .. } => args,
             CliCommand::UploadComponent { args, .. } => args,
             CliCommand::UploadService { args, .. } => args,

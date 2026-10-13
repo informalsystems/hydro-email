@@ -136,6 +136,8 @@ vars:
   DEPLOY_FILENAME_CONTRACT_USER_REGISTRY_INSTANTIATE: "contract-user-registry-instantiate.json"
   DEPLOY_FILENAME_CONTRACT_PROXY_CODE_ID: "contract-proxy-code-id.json"
   DEPLOY_FILENAME_CONTRACT_PROXY_INSTANTIATE: "contract-proxy-instantiate.json"
+  DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_CODE_ID: "contract-local-control-center-code-id.json"
+  DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_INSTANTIATE: "contract-local-control-center-instantiate.json"
   DEPLOY_FILENAME_COMPONENT_OPERATOR_EMAIL_READER_CID: "component-operator-email-reader-cid.json"
   DEPLOY_FILENAME_COMPONENT_AGGREGATOR_SUBMITTER_CID: "component-aggregator-submitter-cid.json"
   DEPLOY_FILENAME_SERVICE_CID: "service-cid.json"

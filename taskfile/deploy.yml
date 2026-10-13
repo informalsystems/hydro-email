@@ -36,17 +36,55 @@ tasks:
           CODE_ID:
             sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_CODE_ID}}" | jq -r '.code_id'
           FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_INSTANTIATE}}"
-      - task: contract-instantiate-proxy
-        vars:
-          ADMIN_ADDRESS:
-            sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_INSTANTIATE}}" | jq -r '.address'
-          CODE_ID:
-            sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_PROXY_CODE_ID}}" | jq -r '.code_id'
-          CONTROL_CENTER_ADDRESS: "{{.DEPLOY_CONTROL_CENTER_ADDRESS}}"
-          FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_PROXY_INSTANTIATE}}"
+      - task: local-control-center
+      - task: proxy
       - echo ""
       - echo "✅ Deployment completed! Artifacts are in {{.PATH_DEPLOYMENTS}}"
       - echo ""
+
+  local-control-center:
+    internal: true
+    desc: "Deploy an empty-vault Hydro control center when targeting the local chain"
+    status:
+      - '[ "{{.DEPLOY_CHAIN_TARGET}}" != "local" ]'
+    cmds:
+      - task: :contracts:build-local-control-center
+      - task: contract-upload
+        vars:
+          CONTRACT: "local-control-center"
+          FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_CODE_ID}}"
+      - task: contract-instantiate-local-control-center
+
+  contract-instantiate-local-control-center:
+    internal: true
+    vars:
+      CODE_ID:
+        sh: jq -r '.code_id' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_CODE_ID}}"
+    cmds:
+      - >
+        task helper-exec -- instantiate-local-control-center
+        --code-id {{.CODE_ID}}
+        --output-file {{.DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_INSTANTIATE}}
+        --chain {{.CHAIN_KEY}}
+
+  proxy:
+    internal: true
+    desc: "Instantiate a proxy using the local control center or configured remote addresses"
+    cmds:
+      - task: contract-instantiate-proxy
+        vars:
+          ADMIN_ADDRESS:
+            sh: jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_INSTANTIATE}}"
+          CODE_ID:
+            sh: jq -r '.code_id' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_PROXY_CODE_ID}}"
+          CONTROL_CENTER_ADDRESS:
+            sh: |
+              if [ "{{.DEPLOY_CHAIN_TARGET}}" = "local" ]; then
+                jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_INSTANTIATE}}"
+              else
+                echo "{{.DEPLOY_CONTROL_CENTER_ADDRESS}}"
+              fi
+          FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_PROXY_INSTANTIATE}}"
 
   user:
     cmds:

@@ -250,6 +250,40 @@ async fn main() {
                 .unwrap();
         }
 
+        CliCommand::InstantiateLocalControlCenter { args, code_id } => {
+            assert_eq!(
+                ctx.chain_key().to_string(),
+                "dev:local",
+                "This empty-vault control center is only for local development"
+            );
+            let client = ctx.signing_client().await.unwrap();
+            // Hydro uses CosmWasm 2.x; the helper uses 3.x. Use its JSON wire format.
+            let instantiate_msg = serde_json::json!({
+                "deposit_cap": "0",
+                "whitelist": [ctx.wallet_addr().await.unwrap().to_string()],
+                "subvaults": []
+            });
+            let (contract_addr, tx_resp) = client
+                .contract_instantiate(
+                    None,
+                    code_id,
+                    "Local Hydro Control Center",
+                    &instantiate_msg,
+                    vec![],
+                    None,
+                )
+                .await
+                .unwrap();
+            println!("Instantiated local Hydro control center at address: {contract_addr}");
+            args.output()
+                .write(OutputContractInstantiate {
+                    kind: ContractKind::LocalControlCenter,
+                    address: contract_addr.to_string(),
+                    tx_hash: tx_resp.txhash,
+                })
+                .await
+                .unwrap();
+        }
         CliCommand::InstantiateProxy {
             admins,
             control_centers,

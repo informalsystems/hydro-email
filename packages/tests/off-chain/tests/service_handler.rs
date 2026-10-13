@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use app_utils::tracing::tracing_init;
 use off_chain_tests::client::service_handler::ServiceHandlerClient;
 use off_chain_tests::client::user_registry::UserRegistryClient;
