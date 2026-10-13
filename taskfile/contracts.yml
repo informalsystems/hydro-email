@@ -85,6 +85,25 @@ tasks:
         {{.DOCKER_SUDO}} rm -rf "./artifacts/{{.FILENAME_SRC}}" || true
       - echo "Built contract at {{.PATH_CONTRACT_BUILDS}}/{{.FILENAME_DEST}}"
 
+  build-local-control-center:
+    desc: "Build Hydro's control center for the local email flow"
+    sources:
+      - "{{.PATH_REPO_ROOT}}/hydro/contracts/inflow/control-center/**/*"
+      - "{{.PATH_REPO_ROOT}}/hydro/packages/interface/**/*"
+      - "{{.PATH_REPO_ROOT}}/hydro/Cargo.toml"
+      - "{{.PATH_REPO_ROOT}}/hydro/Cargo.lock"
+    generates:
+      - "{{.PATH_CONTRACT_BUILDS}}/app_contract_local_control_center.wasm"
+    cmds:
+      - >
+        {{.DOCKER_SUDO}} docker run --rm
+        -v "{{.PATH_REPO_ROOT}}/hydro:/code"
+        --mount type=volume,source="{{.CW_OPTIMIZER_CACHE}}_hydro_cache",target=/target
+        --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry
+        {{.DOCKER_IMAGE_COSMWASM_OPTIMIZER}} "contracts/inflow/control-center"
+      - mkdir -p "{{.PATH_CONTRACT_BUILDS}}"
+      - cp "{{.PATH_REPO_ROOT}}/hydro/artifacts/control_center.wasm" "{{.PATH_CONTRACT_BUILDS}}/app_contract_local_control_center.wasm"
+
   ### SCHEMA TASKS
   schema-all:
     cmds:

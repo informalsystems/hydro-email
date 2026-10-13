@@ -9,6 +9,15 @@ rpc_endpoint = "https://rpc.cosmos.nodestake.org"
 gas_price = 0.005
 gas_denom = "uatom"
 
+[default.chains.dev.local]
+type = "cosmos"
+chain_id = "pion-1"
+bech32_prefix = "neutron"
+rpc_endpoint = "http://localhost:26657"
+grpc_endpoint = "http://localhost:9090"
+gas_price = 0.025
+gas_denom = "untrn"
+
 [wavs]
 dev_endpoints_enabled = true
 

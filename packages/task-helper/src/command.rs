@@ -45,6 +45,14 @@ pub enum CliCommand {
         #[clap(flatten)]
         args: CliArgs,
     },
+    /// Instantiate a local Hydro control center with no vaults
+    InstantiateLocalControlCenter {
+        #[arg(long)]
+        code_id: u64,
+
+        #[clap(flatten)]
+        args: CliArgs,
+    },
     /// Instantiate the Proxy contract
     InstantiateProxy {
         #[arg(long)]
@@ -259,6 +267,7 @@ pub enum ContractKind {
     ServiceHandler,
     Proxy,
     UserRegistry,
+    LocalControlCenter,
 }
 
 impl std::fmt::Display for ContractKind {
@@ -273,6 +282,7 @@ impl ContractKind {
             Self::ServiceHandler => "service-handler",
             Self::Proxy => "proxy",
             Self::UserRegistry => "user-registry",
+            Self::LocalControlCenter => "local-control-center",
         }
     }
     pub async fn wasm_bytes(&self) -> Vec<u8> {

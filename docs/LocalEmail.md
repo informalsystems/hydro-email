@@ -20,6 +20,15 @@ Now, assuming you've set the `.env` credentials for a local test user, you can c
 task components:exec-read-mail
 ```
 
+This diagnostic reads and marks the message as seen, but does not submit it to the chain.
+To test the deployed service, send a fresh message and let the WAVS operator read it
+automatically (every 10 seconds). Then query the results:
+
+```bash
+task contracts:query-service-handler-emails
+task contracts:query-proxy-state
+```
+
 When you're finished, you can stop the local mail server:
 
 ```bash

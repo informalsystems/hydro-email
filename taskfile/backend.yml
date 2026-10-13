@@ -207,7 +207,9 @@ tasks:
       MSG: '{{.MSG | default "Hello, World!"}}'
     cmds:
       - |
-        printf "EHLO localhost\r\nMAIL FROM:<{{.FROM}}>\r\nRCPT TO:<{{.USERNAME}}>\r\nDATA\r\nSubject: Test email via GreenMail\r\nFrom: {{.FROM}}\r\nTo: {{.USERNAME}}\r\n\r\n{{.MSG}}\r\n.\r\nQUIT\r\n" \
+        message_id="$(date +%s)-$$-$RANDOM-$RANDOM@hydro-email.local"
+        message_date="$(LC_ALL=C date -u '+%a, %d %b %Y %H:%M:%S +0000')"
+        printf "EHLO localhost\r\nMAIL FROM:<{{.FROM}}>\r\nRCPT TO:<{{.USERNAME}}>\r\nDATA\r\nMessage-ID: <%s>\r\nDate: %s\r\nSubject: Test email via GreenMail\r\nFrom: {{.FROM}}\r\nTo: {{.USERNAME}}\r\n\r\n{{.MSG}}\r\n.\r\nQUIT\r\n" "$message_id" "$message_date" \
         | nc localhost 3025
       - echo "Email sent from {{.FROM}} to {{.USERNAME}}"
 

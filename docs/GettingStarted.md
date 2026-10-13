@@ -49,6 +49,11 @@ task deploy:all
 # task deploy:all SKIP_UPLOAD_CONTRACTS=true SKIP_UPLOAD_COMPONENTS=true SKIP_UPLOAD_MIDDLEWARE=true
 ```
 
+For `DEPLOY_CHAIN_TARGET="local"`, deployment also builds and deploys Hydro's
+control center with an empty vault list, then points the proxy at its address.
+This lets you test email recording and the proxy's `Forwarded` state without
+deploying vaults. It does not test deposits. The local flow ignores
+`DEPLOY_CONTROL_CENTER_ADDRESS`; remote deployments still use that setting.
 
 5. Send an email to the operator email address
 
