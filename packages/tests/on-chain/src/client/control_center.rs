@@ -21,6 +21,7 @@ impl ControlCenterClient {
             deposit_cap,
             whitelist: whitelist.iter().map(|a| a.to_string()).collect(),
             subvaults: vec![],
+            fee_config: None,
         };
 
         let (address, _) = client

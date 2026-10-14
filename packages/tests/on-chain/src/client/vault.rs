@@ -1,6 +1,6 @@
 use app_client::executor::SigningClientWrapper;
 use app_contract_api::vault::{DenomMetadata, InstantiateMsg};
-use hydro_interface::inflow::{ConfigResponse, QueryMsg};
+use hydro_interface::inflow_vault::{ConfigResponse, QueryMsg};
 use layer_climb::prelude::*;
 
 use crate::code_ids::CodeId;

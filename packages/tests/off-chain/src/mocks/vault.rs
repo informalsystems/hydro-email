@@ -5,7 +5,7 @@ use cosmwasm_std::{
 };
 use cw_multi_test::{Contract, ContractWrapper};
 use cw_storage_plus::Item;
-use hydro_interface::inflow::{Config, ConfigResponse, ExecuteMsg, QueryMsg};
+use hydro_interface::inflow_vault::{Config, ConfigResponse, ExecuteMsg, QueryMsg};
 
 const CONFIG: Item<Config> = Item::new("config");
 
