@@ -4,9 +4,6 @@
 feature is email-to-proxy registration. It shares the existing contract API,
 email ID derivation, and chain clients. It runs independently of WAVS.
 
-Email event claims, aggregator callbacks, mailbox acknowledgment, operator SQLite,
-and service-handler replay prevention are follow-up work, not implemented here.
-
 ## Local setup
 
 Add the `BACKEND_*` settings from `.env.example` to your existing `.env` without
