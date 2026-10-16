@@ -21,6 +21,7 @@ But really, that's it... if you find yourself adding configuration somewhere els
   - [backend/wavs-home](../backend/wavs-home) - WAVS home (operator and aggregator) 
 - [docs/](../docs) - documentation
 - [packages/](../packages) - all Rust code packages
+  - [packages/backend](../packages/backend) - shared HTTP API, Postgres storage, and registration worker
   - [packages/client](../packages/client) - client package
   - [packages/components](../packages/components) - WASI components used in services 
   - [packages/contracts](../packages/contracts) - CosmWasm smart contracts

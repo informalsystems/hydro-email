@@ -6,6 +6,7 @@
 - [AgentMail](docs/AgentMail.md): set up the AgentMail inbox this reads mail from.
 - [LocalEmail](docs/LocalEmail.md): run local email server for testing. 
 - [Codebase](docs/Codebase.md): overview of the code structure
+- [Backend](docs/Backend.md): registration API, Postgres, and provisioning worker.
 
 # Notes
 

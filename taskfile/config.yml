@@ -38,6 +38,7 @@ vars:
   DOCKER_IMAGE_PROMETHEUS: "prom/prometheus:v3.3.0"
   DOCKER_IMAGE_IPFS: "ipfs/kubo:v0.38.1"
   DOCKER_IMAGE_GREENMAIL: "greenmail/standalone:latest"
+  DOCKER_IMAGE_POSTGRES: "postgres:16-alpine"
 
   # Ports
   LOCAL_PORT_WAVS_OPERATOR_BASE: 8123 # Base port for WAVS, subsequent ports will be incremented by 1 for each instance
@@ -45,6 +46,7 @@ vars:
   LOCAL_PORT_IPFS_GATEWAY: 8301
   LOCAL_PORT_JAEGER_UI: 16686
   LOCAL_PORT_PROMETHEUS_UI: 9092
+  LOCAL_PORT_BACKEND_POSTGRES: 5433
 
   # Deployment
   TESTNET_CHAIN_KEY: "cosmos:pion-1"

@@ -1,0 +1,34 @@
+[package]
+name = "app-backend"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+app-contract-api.workspace = true
+app-utils.workspace = true
+async-trait.workspace = true
+axum = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+const-hex.workspace = true
+dotenvy.workspace = true
+email_address = "0.2"
+hydro-proxy.workspace = true
+layer-climb.workspace = true
+serde.workspace = true
+sha2.workspace = true
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "derive", "migrate", "macros"] }
+subtle = "2.6"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+wavs-types.workspace = true
+
+[dev-dependencies]
+cosmwasm-std.workspace = true
+cw-multi-test.workspace = true
+serde_json.workspace = true
+tower = { version = "0.5", features = ["util"] }
+
