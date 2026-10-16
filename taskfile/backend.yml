@@ -16,8 +16,40 @@ env:
   COMPOSE_PORT_IPFS_GATEWAY: "{{.LOCAL_PORT_IPFS_GATEWAY}}"
   COMPOSE_PORT_JAEGER_UI: "{{.LOCAL_PORT_JAEGER_UI}}"
   COMPOSE_PORT_PROMETHEUS_UI: "{{.LOCAL_PORT_PROMETHEUS_UI}}"
+  COMPOSE_DOCKER_IMAGE_POSTGRES: "{{.DOCKER_IMAGE_POSTGRES}}"
+  COMPOSE_BACKEND_POSTGRES_PORT: "{{.LOCAL_PORT_BACKEND_POSTGRES}}"
+  COMPOSE_BACKEND_POSTGRES_PASSWORD: '{{.BACKEND_POSTGRES_PASSWORD | default ""}}'
 
 tasks:
+  postgres-start:
+    desc: "Start the shared backend's persistent local Postgres database"
+    cmds:
+      - '{{.DOCKER_SUDO}} docker compose --project-name hydro-email-backend --file "{{.PATH_DOCKER_FILES}}/postgres.yml" up -d --wait'
+
+  postgres-stop:
+    desc: "Stop the backend database; RESET=true also deletes its local data volume"
+    vars:
+      RESET: '{{.RESET | default "false"}}'
+    cmds:
+      - '{{.DOCKER_SUDO}} docker compose --project-name hydro-email-backend --file "{{.PATH_DOCKER_FILES}}/postgres.yml" {{if eq .RESET "true"}}down --volumes{{else}}stop{{end}}'
+
+  api:
+    desc: "Run the shared backend API (provisioning is opt-in in .env)"
+    dir: "{{.PATH_REPO_ROOT}}"
+    cmds:
+      - cargo run --package app-backend
+
+  api-test:
+    desc: "Run backend unit and Postgres integration tests using BACKEND_DATABASE_URL"
+    dir: "{{.PATH_REPO_ROOT}}"
+    env:
+      DATABASE_URL: '{{.BACKEND_DATABASE_URL | default ""}}'
+    preconditions:
+      - sh: 'test -n "$DATABASE_URL"'
+        msg: "Set BACKEND_DATABASE_URL to a local or dedicated test Postgres server before running backend:api-test"
+    cmds:
+      - cargo test --package app-backend -- --include-ignored
+
   start-all:
     vars:
       OPERATORS: '{{.OPERATORS | default "1"}}'

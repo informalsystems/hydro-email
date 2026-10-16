@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: ${COMPOSE_DOCKER_IMAGE_POSTGRES}
+    environment:
+      POSTGRES_DB: hydro_email
+      POSTGRES_USER: hydro
+      POSTGRES_PASSWORD: ${COMPOSE_BACKEND_POSTGRES_PASSWORD:?Set BACKEND_POSTGRES_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${COMPOSE_BACKEND_POSTGRES_PORT}:5432"
+    volumes:
+      - hydro-email-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hydro -d hydro_email"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  hydro-email-postgres:
