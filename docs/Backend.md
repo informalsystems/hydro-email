@@ -4,9 +4,6 @@
 feature is email-to-proxy registration. It shares the existing contract API,
 email ID derivation, and chain clients. It runs independently of WAVS.
 
-The backend requires Rust 1.94 or newer for SQLx 0.9. The workspace's declared
-minimum Rust version for the other packages remains unchanged.
-
 Email event claims, aggregator callbacks, mailbox acknowledgment, operator SQLite,
 and service-handler replay prevention are follow-up work, not implemented here.
 
