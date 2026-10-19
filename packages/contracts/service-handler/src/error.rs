@@ -22,6 +22,9 @@ pub enum ContractError {
     #[error("Unauthorized")]
     Unauthorized,
 
+    #[error("Event already processed")]
+    EventAlreadyProcessed,
+
     #[error("Unknown reply id: {id}")]
     UnknownReplyId { id: u64 },
 
