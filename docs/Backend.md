@@ -7,8 +7,9 @@ email ID derivation, and chain clients. It runs independently of WAVS.
 ## Local setup
 
 Add the `BACKEND_*` settings from `.env.example` to your existing `.env` without
-overwriting your other configuration. Set a random registration API credential
-of at least 32 characters and the chain key and deployed registry address.
+overwriting your other configuration. Set a random backend API credential
+of at least 32 characters, the chain key, and deployed registry and service-handler
+addresses.
 `BACKEND_DATABASE_URL` must match the local database password and configured port.
 Shared defaults belong in `taskfile/config.yml`; secrets and deployment-specific
 values belong in `.env`. The service also accepts environment variables directly.
@@ -66,7 +67,7 @@ concurrently. API-only instances can run separately with provisioning disabled.
 ## Registration API
 
 All `/v1/registrations` routes require an API key via
-`Authorization: Bearer <API key>`, matching `BACKEND_REGISTRATION_API_KEY`.
+`Authorization: Bearer <API key>`, matching `BACKEND_API_KEY`.
 Health endpoints do not require authentication. The backend enforces global
 registration quotas; per-IP throttling is not implemented.
 
@@ -185,21 +186,57 @@ attempt, preventing parallel submissions while allowing registration recovery.
 
 ## Action submission storage
 
-Migration `0002_action_submissions.sql` adds storage for WAVS actions:
+Migration `0002_actions.sql` adds storage for WAVS actions:
 
-- `actions`: decoded payload, user ID, and current outcome. Events are unique per
-  chain, service-handler address, and 20-byte event ID stored as lowercase hex.
-- `action_submission_attempts`: individual attempts, transaction hashes, errors,
-  and scheduling fields for later reconciliation. A pending attempt requires a
-  transaction hash.
-- `action_transitions`: outcome history, optionally linked to a submission attempt.
+- `actions`: decoded payload, user ID, current outcome, transaction hash, and
+  reconciliation timestamps. Events are unique per chain, service-handler address,
+  and 20-byte event ID stored as lowercase hex.
+- `action_transitions`: history of outcome changes for each action.
 
-Actions start as `received`. Submission outcomes are `submitting`, `pending`,
-`completed`, `failed`, or `outcome_unknown`. The schema defines allowed values;
-transition rules and atomic updates will be implemented in the persistence layer.
-This migration does not add action endpoints, connect WAVS, or enable resubmission
-or reconciliation. Email failures before a WAVS event ID exists are outside this
-schema's current scope.
+Actions start as `received`, then become `submitting` while WAVS handles submission
+and confirmation. Outcomes are `completed`, `failed`, or `outcome_unknown`.
+Creating an action records its initial `received` transition atomically. Result
+reporting, WAVS integration, and reconciliation will follow separately. Email failures before a
+WAVS event ID exists are outside this schema's current scope.
+
+### Create an action
+
+`POST /v1/actions` uses the same `Authorization: Bearer <API key>` authentication
+as registration. This is a server-to-server endpoint.
+
+```json
+{
+  "event_id": "<40 lowercase hexadecimal characters>",
+  "payload": {
+    "email": {
+      "from": "<64 lowercase hexadecimal user ID>",
+      "subject": "deposit"
+    }
+  }
+}
+```
+
+`payload` uses the service handler's `CustomExecuteMsg` format. Its `from` field
+already contains the hashed user ID; the backend stores that value without hashing
+it again. The backend scopes the action to `BACKEND_CHAIN_KEY` and
+`BACKEND_SERVICE_HANDLER_ADDRESS`, never caller-supplied deployment settings.
+Action creation is available with provisioning disabled and does not submit transactions.
+The handler address must be configured.
+
+- `201`: action and initial history entry created with status `received`.
+- `200`: same event and payload already exist; current record returned unchanged.
+- `400`: invalid event or user ID.
+- `401`: missing or invalid API credential.
+- `409`: event exists with different sender or payload.
+- `413`: request exceeds 4 KiB.
+- `422`: malformed request shape, unsupported payload, or unknown top-level field.
+- `503`: database unavailable.
+
+The response contains `id`, `chain_key`, `service_handler_address`, `event_id`,
+`user_id`, `payload`, `status`, `tx_hash`, `error_code`, `submitted_at`,
+`last_checked_at`, `next_check_at`, `created_at`, and `updated_at`.
+The endpoint records an action reported by an authenticated caller; it does not
+verify WAVS signatures or establish that the action has executed on-chain.
 
 ## Validation
 
@@ -220,10 +257,8 @@ the HTTP handlers and worker directly, using a fake chain. They require no
 deployed contracts, signing wallet, API credential, or running WAVS instance.
 They do not broadcast chain transactions.
 
-These tests cover concurrent admission, quotas, submission-attempt uniqueness, HTTP access,
-successful provisioning with a fake chain, and uncertain/failed submissions.
-`registrations.rs` covers registration behavior. `action_submissions.rs` covers
-action schema constraints and concurrent event uniqueness.
+`registrations.rs` covers registration API, persistence, and worker behavior.
+`actions.rs` covers action API, persistence, and database constraints.
 Each Postgres test applies all migrations to a fresh test database.
 
 For unit tests alone, no database is needed. Plain `cargo test` skips the Postgres

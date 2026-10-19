@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use app_contract_api::user_registry::msg::UserId;
+use app_contract_api::{service_handler::msg::CustomExecuteMsg, user_registry::msg::UserId};
 use axum::{
     extract::{DefaultBodyLimit, Path, Request, State},
     http::{header::AUTHORIZATION, StatusCode},
@@ -13,11 +13,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use crate::store::{Admission, Store};
+use crate::{
+    action_store::{ActionStore, CreateAction},
+    registration_store::{Admission, RegistrationStore},
+};
 
 #[derive(Clone)]
 pub struct ApiState {
-    pub store: Store,
+    pub store: RegistrationStore,
+    pub actions: ActionStore,
     pub api_key_hash: [u8; 32],
     pub hourly_quota: i64,
     pub daily_quota: i64,
@@ -28,6 +32,7 @@ pub fn router(state: ApiState) -> Router {
     let protected = Router::new()
         .route("/v1/registrations", post(register))
         .route("/v1/registrations/{user_id}", get(status))
+        .route("/v1/actions", post(create_action))
         .route_layer(middleware::from_fn_with_state(state.clone(), authenticate));
     Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
@@ -61,6 +66,43 @@ async fn authenticate(
 #[serde(deny_unknown_fields)]
 struct RegisterRequest {
     email: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateActionRequest {
+    event_id: String,
+    payload: CustomExecuteMsg,
+}
+
+fn is_hex_id(value: &str, length: usize) -> bool {
+    value.len() == length
+        && value
+            .bytes()
+            .all(|v| v.is_ascii_hexdigit() && !v.is_ascii_uppercase())
+}
+
+async fn create_action(
+    State(state): State<Arc<ApiState>>,
+    Json(input): Json<CreateActionRequest>,
+) -> Result<Response, ApiError> {
+    if !is_hex_id(&input.event_id, 40) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_event_id"));
+    }
+    let CustomExecuteMsg::Email(email) = &input.payload;
+    if !is_hex_id(email.from.as_str(), 64) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_user_id"));
+    }
+    match state
+        .actions
+        .create(&input.event_id, input.payload)
+        .await
+        .map_err(internal)?
+    {
+        CreateAction::Created(action) => Ok((StatusCode::CREATED, Json(action)).into_response()),
+        CreateAction::Existing(action) => Ok((StatusCode::OK, Json(action)).into_response()),
+        CreateAction::Conflict => Err(ApiError(StatusCode::CONFLICT, "action_conflict")),
+    }
 }
 
 // Preserve mailbox case: changing identity normalization here would stop matching
@@ -109,11 +151,7 @@ async fn status(
     State(state): State<Arc<ApiState>>,
     Path(user_id): Path<String>,
 ) -> Result<Response, ApiError> {
-    if user_id.len() != 64
-        || !user_id
-            .bytes()
-            .all(|v| v.is_ascii_digit() || (b'a'..=b'f').contains(&v))
-    {
+    if !is_hex_id(&user_id, 64) {
         return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_user_id"));
     }
     let row = state
@@ -133,7 +171,7 @@ async fn ready(State(state): State<Arc<ApiState>>) -> StatusCode {
 }
 
 fn internal(_error: anyhow::Error) -> ApiError {
-    tracing::error!("Registration database operation failed");
+    tracing::error!("Backend database operation failed");
     ApiError(StatusCode::SERVICE_UNAVAILABLE, "backend_unavailable")
 }
 

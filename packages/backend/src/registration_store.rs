@@ -4,7 +4,7 @@ use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction};
 
 #[derive(Clone)]
-pub struct Store {
+pub struct RegistrationStore {
     pub pool: PgPool,
     pub chain_key: String,
     pub registry_address: String,
@@ -34,7 +34,7 @@ pub enum Admission {
     QuotaExceeded,
 }
 
-impl Store {
+impl RegistrationStore {
     pub async fn migrate(pool: &PgPool) -> Result<()> {
         sqlx::migrate!().run(pool).await?;
         Ok(())

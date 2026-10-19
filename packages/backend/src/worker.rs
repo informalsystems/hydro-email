@@ -5,11 +5,11 @@ use sqlx::{Connection, PgConnection};
 
 use crate::{
     chain::{Broadcast, Confirmation, ProxyState, RegistrationChain},
-    store::{Registration, Store},
+    registration_store::{Registration, RegistrationStore},
 };
 
 pub struct Worker {
-    pub store: Store,
+    pub store: RegistrationStore,
     pub chain: Arc<dyn RegistrationChain>,
 }
 

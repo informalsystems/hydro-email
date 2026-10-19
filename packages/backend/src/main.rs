@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use app_backend::{
+    action_store::ActionStore,
     api::{self, ApiState},
     chain::CosmosChain,
     config::Config,
-    store::Store,
+    registration_store::RegistrationStore,
     worker::Worker,
 };
 use sha2::{Digest, Sha256};
@@ -23,14 +24,19 @@ async fn main() -> Result<()> {
         .acquire_timeout(std::time::Duration::from_secs(5))
         .connect(&config.database_url)
         .await?;
-    Store::migrate(&pool).await?;
-    let store = Store {
+    RegistrationStore::migrate(&pool).await?;
+    let store = RegistrationStore {
         pool,
         chain_key: config.chain_key.clone(),
         registry_address: config.registry_address.clone(),
     };
     let app = api::router(ApiState {
         store: store.clone(),
+        actions: ActionStore {
+            pool: store.pool.clone(),
+            chain_key: config.chain_key.clone(),
+            service_handler_address: config.service_handler_address.clone(),
+        },
         api_key_hash: Sha256::digest(config.api_key.as_bytes()).into(),
         hourly_quota: config.registrations_per_hour,
         daily_quota: config.registrations_per_day,
