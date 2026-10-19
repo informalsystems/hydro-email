@@ -1,7 +1,7 @@
 use anyhow::Result;
 use app_contract_api::service_handler::msg::CustomExecuteMsg;
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{types::Json, PgPool};
 
 #[derive(Clone)]
@@ -35,7 +35,186 @@ pub enum CreateAction {
     Conflict,
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ActionTransition {
+    pub id: i64,
+    pub action_id: i64,
+    pub status: String,
+    pub error_code: Option<String>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActionDetails {
+    pub action: Action,
+    pub history: Vec<ActionTransition>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ActionPage {
+    pub actions: Vec<Action>,
+    pub next_before_id: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionOutcome {
+    Completed,
+    Failed,
+    OutcomeUnknown,
+}
+
+impl ActionOutcome {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::OutcomeUnknown => "outcome_unknown",
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionResult {
+    pub status: ActionOutcome,
+    pub tx_hash: Option<String>,
+    pub error_code: Option<String>,
+}
+
+pub enum UpdateAction {
+    Updated(Box<Action>),
+    NotFound,
+    Conflict,
+}
+
 impl ActionStore {
+    pub async fn details(&self, id: i64) -> Result<Option<ActionDetails>> {
+        let mut tx = self.pool.begin().await?;
+        // Hold the action stable while reading its matching history.
+        let action = sqlx::query_as(
+            "SELECT * FROM actions WHERE id=$1 AND chain_key=$2 AND service_handler_address=$3 FOR SHARE",
+        )
+        .bind(id).bind(&self.chain_key).bind(&self.service_handler_address)
+        .fetch_optional(&mut *tx).await?;
+        let Some(action) = action else {
+            return Ok(None);
+        };
+        let history =
+            sqlx::query_as("SELECT * FROM action_transitions WHERE action_id=$1 ORDER BY id")
+                .bind(id)
+                .fetch_all(&mut *tx)
+                .await?;
+        tx.commit().await?;
+        Ok(Some(ActionDetails { action, history }))
+    }
+
+    pub async fn list(
+        &self,
+        user_id: &str,
+        before_id: Option<i64>,
+        limit: u32,
+    ) -> Result<ActionPage> {
+        let mut actions: Vec<Action> = sqlx::query_as(
+            "SELECT * FROM actions WHERE chain_key=$1 AND service_handler_address=$2 AND user_id=$3
+             AND ($4::bigint IS NULL OR id < $4) ORDER BY id DESC LIMIT $5",
+        )
+        .bind(&self.chain_key)
+        .bind(&self.service_handler_address)
+        .bind(user_id)
+        .bind(before_id)
+        .bind(i64::from(limit) + 1)
+        .fetch_all(&self.pool)
+        .await?;
+        let has_more = actions.len() > limit as usize;
+        actions.truncate(limit as usize);
+        let next_before_id = if has_more {
+            actions.last().map(|action| action.id)
+        } else {
+            None
+        };
+        Ok(ActionPage {
+            actions,
+            next_before_id,
+        })
+    }
+
+    pub async fn submission(&self, id: i64) -> Result<UpdateAction> {
+        self.update(id, "submitting", None, None).await
+    }
+
+    pub async fn report_result(&self, id: i64, result: ActionResult) -> Result<UpdateAction> {
+        self.update(
+            id,
+            result.status.as_str(),
+            result.tx_hash,
+            result.error_code,
+        )
+        .await
+    }
+
+    async fn update(
+        &self,
+        id: i64,
+        status: &str,
+        tx_hash: Option<String>,
+        error_code: Option<String>,
+    ) -> Result<UpdateAction> {
+        let mut tx = self.pool.begin().await?;
+        let current: Option<Action> = sqlx::query_as(
+            "SELECT * FROM actions WHERE id=$1 AND chain_key=$2 AND service_handler_address=$3 FOR UPDATE",
+        )
+        .bind(id).bind(&self.chain_key).bind(&self.service_handler_address)
+        .fetch_optional(&mut *tx).await?;
+        let Some(current) = current else {
+            return Ok(UpdateAction::NotFound);
+        };
+        if current
+            .tx_hash
+            .as_ref()
+            .zip(tx_hash.as_ref())
+            .is_some_and(|(saved, new)| saved != new)
+        {
+            return Ok(UpdateAction::Conflict);
+        }
+        let tx_hash = tx_hash.or_else(|| current.tx_hash.clone());
+        if current.status == status
+            && current.tx_hash == tx_hash
+            && current.error_code == error_code
+        {
+            tx.commit().await?;
+            return Ok(UpdateAction::Updated(Box::new(current)));
+        }
+        let allowed = match status {
+            "submitting" => current.status == "received",
+            _ => matches!(current.status.as_str(), "submitting" | "outcome_unknown"),
+        };
+        if !allowed {
+            return Ok(UpdateAction::Conflict);
+        }
+        let action = sqlx::query_as(
+            "UPDATE actions SET status=$2, tx_hash=$3, error_code=$4,
+             submitted_at=CASE WHEN $2='submitting' THEN now() ELSE submitted_at END,
+             updated_at=now(), next_check_at=now() WHERE id=$1 RETURNING *",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(tx_hash)
+        .bind(&error_code)
+        .fetch_one(&mut *tx)
+        .await?;
+        sqlx::query(
+            "INSERT INTO action_transitions (action_id, status, error_code) VALUES ($1, $2, $3)",
+        )
+        .bind(id)
+        .bind(status)
+        .bind(error_code)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(UpdateAction::Updated(Box::new(action)))
+    }
+
     pub async fn create(&self, event_id: &str, payload: CustomExecuteMsg) -> Result<CreateAction> {
         let CustomExecuteMsg::Email(email) = &payload;
         let mut tx = self.pool.begin().await?;

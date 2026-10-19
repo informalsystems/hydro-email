@@ -196,8 +196,9 @@ Migration `0002_actions.sql` adds storage for WAVS actions:
 Actions start as `received`, then become `submitting` while WAVS handles submission
 and confirmation. Outcomes are `completed`, `failed`, or `outcome_unknown`.
 Creating an action records its initial `received` transition atomically. Result
-reporting, WAVS integration, and reconciliation will follow separately. Email failures before a
-WAVS event ID exists are outside this schema's current scope.
+reporting updates the action and history atomically. WAVS integration and chain
+reconciliation will follow separately. Email failures before a WAVS event ID exists
+are outside this schema's current scope.
 
 ### Create an action
 
@@ -237,6 +238,62 @@ The response contains `id`, `chain_key`, `service_handler_address`, `event_id`,
 `last_checked_at`, `next_check_at`, `created_at`, and `updated_at`.
 The endpoint records an action reported by an authenticated caller; it does not
 verify WAVS signatures or establish that the action has executed on-chain.
+
+### Record submission
+
+`POST /v1/actions/{id}/submission` takes no body and moves a `received` action to
+`submitting`, setting `submitted_at`. It returns the action with `200`. Repeated
+reports while already `submitting` return the unchanged record without adding
+history. This reports submission intent; it does not grant exclusive permission
+to broadcast or submit a transaction itself.
+
+### Report a result
+
+`POST /v1/actions/{id}/result` accepts:
+
+```json
+{
+  "status": "completed",
+  "tx_hash": "<64 hexadecimal characters>"
+}
+```
+
+Allowed outcomes are `completed`, `failed`, and `outcome_unknown`. Completion
+requires a transaction hash and no error code. Failure and uncertainty require
+an `error_code`; a hash is optional. Hashes are stored in uppercase, and an
+existing hash is preserved when omitted. Conflicting hashes are rejected.
+
+Results require a `submitting` or `outcome_unknown` action. Unknown outcomes can
+resolve to completion or failure; `completed` and `failed` are terminal. Identical
+repeated results return `200` without modifying timestamps or adding history.
+Additional hash information for an unknown result is recorded with a history entry.
+Out-of-order reports, incompatible terminal results, and attempts to restart an
+action return `409 action_conflict`.
+
+These endpoints record authenticated caller reports; they do not independently
+confirm the chain outcome. Callers must distinguish definite failures from
+ambiguous errors. In particular, insufficient quorum is not a confirmed execution
+failure. Detailed operator outcome rules are separate from this API.
+
+### Read action status and history
+
+`GET /v1/actions/{id}` returns `{"action": {...}, "history": [...]}`. History is
+ordered by increasing transition ID and contains `id`, `action_id`, `status`,
+`error_code`, and `occurred_at`. The action and history are read consistently.
+
+### List a user's actions
+
+`GET /v1/actions?user_id=<64 lowercase hex characters>&limit=50&before_id=<id>`
+returns `{"actions": [...], "next_before_id": ...}`. Only `user_id` is required.
+Results are newest first by action ID, with a default page size of 50 and a maximum
+of 100. Pass `next_before_id` as `before_id` for the next page; `null` means there
+are no further results. Newer inserts do not shift subsequent pages.
+
+All action endpoints require the API key and use the configured chain and handler.
+An action outside that namespace is treated as missing (`404 action_not_found`).
+Malformed IDs, pagination, hashes, or result combinations return `400`; unsupported
+result statuses or unknown result-body fields return `422`. No new registration
+queries or action retry operations are added.
 
 ## Validation
 
