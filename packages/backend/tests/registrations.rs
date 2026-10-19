@@ -1,5 +1,4 @@
-//! Run against an isolated Postgres instance; SQLx creates a fresh DB per test.
-//! `task backend:api-test` maps BACKEND_DATABASE_URL to SQLx's DATABASE_URL.
+//! Registration API, persistence, and worker tests.
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
