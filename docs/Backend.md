@@ -32,7 +32,7 @@ task backend:api
 
 `RESET=true` removes the local database container and its data volume, deleting
 all local records. The next start creates an empty database and the API applies
-the initial migration. This does not affect a hosted database supplied through
+all migrations. This does not affect a hosted database supplied through
 `BACKEND_DATABASE_URL` or reset any on-chain contracts. Reset an earlier development
 database before running this simplified initial schema.
 
@@ -63,7 +63,7 @@ while jobs are in progress. One provisioner runs per chain, enforced by a dedica
 Postgres session advisory lock; a second provisioner exits rather than running
 concurrently. API-only instances can run separately with provisioning disabled.
 
-## API
+## Registration API
 
 All `/v1/registrations` routes require an API key via
 `Authorization: Bearer <API key>`, matching `BACKEND_REGISTRATION_API_KEY`.
@@ -116,7 +116,7 @@ Email addresses are stored in Postgres but excluded from responses. Internal RPC
 errors and credentials are not returned. Access to Postgres includes access to
 email addresses; restrict it accordingly.
 
-## Provisioning and failure behavior
+## Registration provisioning and failures
 
 ```text
 queued → creating_proxy → proxy_pending → proxy_created
@@ -183,6 +183,24 @@ be processed later. Each new registration normally needs two transactions.
 `registration_attempts` permits one submission per stage per explicitly requested
 attempt, preventing parallel submissions while allowing registration recovery.
 
+## Action submission storage
+
+Migration `0002_action_submissions.sql` adds storage for WAVS actions:
+
+- `actions`: decoded payload, user ID, and current outcome. Events are unique per
+  chain, service-handler address, and 20-byte event ID stored as lowercase hex.
+- `action_submission_attempts`: individual attempts, transaction hashes, errors,
+  and scheduling fields for later reconciliation. A pending attempt requires a
+  transaction hash.
+- `action_transitions`: outcome history, optionally linked to a submission attempt.
+
+Actions start as `received`. Submission outcomes are `submitting`, `pending`,
+`completed`, `failed`, or `outcome_unknown`. The schema defines allowed values;
+transition rules and atomic updates will be implemented in the persistence layer.
+This migration does not add action endpoints, connect WAVS, or enable resubmission
+or reconciliation. Email failures before a WAVS event ID exists are outside this
+schema's current scope.
+
 ## Validation
 
 To run the full backend suite, including Postgres integration tests:
@@ -204,6 +222,9 @@ They do not broadcast chain transactions.
 
 These tests cover concurrent admission, quotas, submission-attempt uniqueness, HTTP access,
 successful provisioning with a fake chain, and uncertain/failed submissions.
+`registrations.rs` covers registration behavior. `action_submissions.rs` covers
+action schema constraints and concurrent event uniqueness.
+Each Postgres test applies all migrations to a fresh test database.
 
 For unit tests alone, no database is needed. Plain `cargo test` skips the Postgres
 integration tests. Additional formatting/build checks can also run independently:
