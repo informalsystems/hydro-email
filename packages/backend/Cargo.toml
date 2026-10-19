@@ -18,8 +18,9 @@ email_address = "0.2"
 hydro-proxy.workspace = true
 layer-climb.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 sha2.workspace = true
-sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "derive", "migrate", "macros"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "json", "derive", "migrate", "macros"] }
 subtle = "2.6"
 tokio.workspace = true
 tracing.workspace = true
@@ -29,6 +30,5 @@ wavs-types.workspace = true
 [dev-dependencies]
 cosmwasm-std.workspace = true
 cw-multi-test.workspace = true
-serde_json.workspace = true
 tower = { version = "0.5", features = ["util"] }
 

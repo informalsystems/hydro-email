@@ -24,14 +24,14 @@ impl Config {
         let config = Self {
             database_url: required("BACKEND_DATABASE_URL")?,
             listen: value("BACKEND_LISTEN", "127.0.0.1:8080").parse()?,
-            api_key: required("BACKEND_REGISTRATION_API_KEY")?,
+            api_key: required("BACKEND_API_KEY")?,
             chain_key: required("BACKEND_CHAIN_KEY")?,
             registry_address: required("BACKEND_USER_REGISTRY_ADDRESS")?,
             registrations_per_hour: value("BACKEND_REGISTRATIONS_PER_HOUR", "10").parse()?,
             registrations_per_day: value("BACKEND_REGISTRATIONS_PER_DAY", "50").parse()?,
             provisioning_enabled,
             proxy_code_id: value("BACKEND_PROXY_CODE_ID", "0").parse()?,
-            service_handler_address: value("BACKEND_SERVICE_HANDLER_ADDRESS", ""),
+            service_handler_address: required("BACKEND_SERVICE_HANDLER_ADDRESS")?,
             control_centers: value("BACKEND_CONTROL_CENTER_ADDRESSES", "")
                 .split_whitespace()
                 .map(str::to_owned)
@@ -40,7 +40,7 @@ impl Config {
         };
         ensure!(
             config.api_key.len() >= 32,
-            "BACKEND_REGISTRATION_API_KEY must contain at least 32 characters"
+            "BACKEND_API_KEY must contain at least 32 characters"
         );
         ensure!(
             config.registrations_per_hour > 0 && config.registrations_per_day > 0,
@@ -50,10 +50,6 @@ impl Config {
             ensure!(
                 config.proxy_code_id > 0,
                 "BACKEND_PROXY_CODE_ID is required for provisioning"
-            );
-            ensure!(
-                !config.service_handler_address.is_empty(),
-                "BACKEND_SERVICE_HANDLER_ADDRESS is required for provisioning"
             );
             ensure!(
                 !config.control_centers.is_empty(),

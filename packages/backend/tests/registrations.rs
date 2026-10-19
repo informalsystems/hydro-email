@@ -6,9 +6,10 @@ use std::sync::{
 
 use anyhow::Result;
 use app_backend::{
+    action_store::ActionStore,
     api::{router, ApiState},
     chain::{Broadcast, Confirmation, ProxyState, RegistrationChain},
-    store::{Admission, Store},
+    registration_store::{Admission, RegistrationStore},
     worker::Worker,
 };
 use app_contract_api::user_registry::msg::UserId;
@@ -21,15 +22,15 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 use tower::ServiceExt;
 
-fn store(pool: PgPool) -> Store {
-    Store {
+fn store(pool: PgPool) -> RegistrationStore {
+    RegistrationStore {
         pool,
         chain_key: "dev:local".into(),
         registry_address: "test-registry".into(),
     }
 }
 
-async fn admit(store: &Store, email: &str) -> String {
+async fn admit(store: &RegistrationStore, email: &str) -> String {
     let id = UserId::new_email_address(email).to_string();
     assert!(matches!(
         store.admit(email, &id, 100, 100).await.unwrap(),
@@ -217,7 +218,7 @@ impl RegistrationChain for FakeChain {
     }
 }
 
-fn worker(store: Store, chain: Arc<FakeChain>) -> Worker {
+fn worker(store: RegistrationStore, chain: Arc<FakeChain>) -> Worker {
     Worker { store, chain }
 }
 
@@ -557,7 +558,12 @@ async fn known_hash_stays_pending_without_a_second_attempt(pool: PgPool) {
 async fn http_authentication_validation_and_idempotency(pool: PgPool) {
     let key = "test-credential-at-least-32-characters";
     let app = router(ApiState {
-        store: store(pool),
+        store: store(pool.clone()),
+        actions: ActionStore {
+            pool,
+            chain_key: "dev:local".into(),
+            service_handler_address: "handler".into(),
+        },
         api_key_hash: Sha256::digest(key).into(),
         hourly_quota: 1,
         daily_quota: 1,
