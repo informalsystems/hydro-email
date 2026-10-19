@@ -2,7 +2,8 @@ use app_contract_api::service_handler::{
     event::EmailEvent,
     msg::{
         AdminResponse, CustomExecuteMsg, CustomQueryMsg, EmailUserIdsResponse, EmailsFromResponse,
-        EmailsResponse, ExecuteMsg, InstantiateMsg, MigrateMsg, QueryMsg, UserRegistryResponse,
+        EmailsResponse, EventProcessedResponse, ExecuteMsg, InstantiateMsg, MigrateMsg, QueryMsg,
+        UserRegistryResponse,
     },
 };
 use cosmwasm_std::{
@@ -16,7 +17,7 @@ use wavs_types::contracts::cosmwasm::{
 
 use crate::{
     error::ContractError,
-    state::{self, ADMIN, SERVICE_MANAGER},
+    state::{self, ADMIN, PROCESSED_EVENTS, SERVICE_MANAGER},
 };
 
 #[entry_point]
@@ -51,23 +52,29 @@ pub fn execute(
             } => {
                 let service_manager = SERVICE_MANAGER.load(deps.storage)?;
 
-                // TODO: only allow eventId to be used once
-
-                deps.querier.query_wasm_smart::<WavsValidateResult>(
-                    service_manager,
-                    &ServiceManagerQueryMessages::WavsValidate {
-                        envelope: envelope.clone(),
-                        signature_data: signature_data.clone(),
-                    },
-                )?;
+                deps.querier
+                    .query_wasm_smart::<WavsValidateResult>(
+                        service_manager,
+                        &ServiceManagerQueryMessages::WavsValidate {
+                            envelope: envelope.clone(),
+                            signature_data: signature_data.clone(),
+                        },
+                    )?
+                    .into_std()?;
 
                 let envelope = envelope
                     .decode()
                     .map_err(|e| ContractError::AbiDecode(e.to_string()))?;
 
+                ensure!(
+                    !PROCESSED_EVENTS.has(deps.storage, envelope.eventId.as_slice()),
+                    ContractError::EventAlreadyProcessed
+                );
+
                 let msg = CustomExecuteMsg::decode(&envelope.payload)
                     .map_err(|e| ContractError::PayloadDecode(e.to_string()))?;
 
+                PROCESSED_EVENTS.save(deps.storage, envelope.eventId.as_slice(), &())?;
                 handle_custom_message(&mut deps, msg)
             }
         },
@@ -102,6 +109,16 @@ fn handle_custom_message(
 pub fn query(deps: Deps, _env: Env, msg: QueryMsg) -> StdResult<Binary> {
     match msg {
         QueryMsg::Custom(msg) => match msg {
+            CustomQueryMsg::EventProcessed { event_id } => {
+                cosmwasm_std::ensure_eq!(
+                    event_id.len(),
+                    20,
+                    cosmwasm_std::StdError::msg("Event ID must be 20 bytes")
+                );
+                to_json_binary(&EventProcessedResponse {
+                    processed: PROCESSED_EVENTS.has(deps.storage, event_id.as_slice()),
+                })
+            }
             CustomQueryMsg::EmailUserIds { limit, start_after } => {
                 let email_user_ids =
                     state::list_email_user_ids(deps.storage, start_after.as_ref(), limit)?;

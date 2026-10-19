@@ -1,5 +1,5 @@
 use cosmwasm_schema::{cw_serde, QueryResponses};
-use cosmwasm_std::Addr;
+use cosmwasm_std::{Addr, HexBinary};
 use wavs_types::contracts::cosmwasm::service_handler::{
     ServiceHandlerExecuteMessages, ServiceHandlerQueryMessages,
 };
@@ -34,6 +34,10 @@ pub enum QueryMsg {
 #[cw_serde]
 #[derive(QueryResponses)]
 pub enum CustomQueryMsg {
+    /// Whether a 20-byte WAVS event ID has been successfully processed.
+    #[returns(EventProcessedResponse)]
+    EventProcessed { event_id: HexBinary },
+
     #[returns(EmailUserIdsResponse)]
     EmailUserIds {
         /// Max number of emails to return
@@ -68,6 +72,11 @@ pub enum CustomQueryMsg {
 pub struct EmailsFromResponse {
     /// List of (email, pagination key)
     pub emails: Vec<(EmailMessageOnly, u64)>,
+}
+
+#[cw_serde]
+pub struct EventProcessedResponse {
+    pub processed: bool,
 }
 
 #[cw_serde]

@@ -13,6 +13,8 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const SERVICE_MANAGER: Item<Addr> = Item::new("service-manager");
 /// Only set in the test approach
 pub const ADMIN: Item<Addr> = Item::new("admin");
+/// Tracks processed WAVS event IDs
+pub const PROCESSED_EVENTS: Map<&[u8], ()> = Map::new("processed-events");
 /// User Registry contract address
 const USER_REGISTRY_ADDRESS: Item<Addr> = Item::new("user-registry-address");
 
