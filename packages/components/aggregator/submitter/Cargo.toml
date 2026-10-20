@@ -11,6 +11,8 @@ app-client = { workspace = true, features = ["wasi"] }
 app-contract-api = { workspace = true }
 layer-climb = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
+const-hex = { workspace = true }
 bincode = { workspace = true }
 anyhow = { workspace = true }
 wstd = { workspace = true }
@@ -21,6 +23,9 @@ cosmwasm-std = { workspace = true }
 wavs-types = {workspace = true}
 wit-bindgen = {workspace = true}
 wasip2 = { workspace = true }
+
+[dev-dependencies]
+futures = { workspace = true }
 
 [lib]
 crate-type = ["cdylib"]

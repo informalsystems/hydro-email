@@ -196,8 +196,9 @@ Migration `0002_actions.sql` adds storage for WAVS actions:
 Actions start as `received`, then become `submitting` while WAVS handles submission
 and confirmation. Outcomes are `completed`, `failed`, or `outcome_unknown`.
 Creating an action records its initial `received` transition atomically. Result
-reporting updates the action and history atomically. WAVS integration and chain
-reconciliation will follow separately. Email failures before a WAVS event ID exists
+reporting updates the action and history atomically. The WAVS aggregator reports
+actions and callback results through these endpoints. Chain reconciliation will
+follow separately. Email failures before a WAVS event ID exists
 are outside this schema's current scope.
 
 ### Create an action
@@ -234,7 +235,7 @@ The handler address must be configured.
 - `503`: database unavailable.
 
 The response contains `id`, `chain_key`, `service_handler_address`, `event_id`,
-`user_id`, `payload`, `status`, `tx_hash`, `error_code`, `submitted_at`,
+`user_id`, `payload`, `status`, `tx_hash`, `error_code`, `error_detail`, `submitted_at`,
 `last_checked_at`, `next_check_at`, `created_at`, and `updated_at`.
 The endpoint records an action reported by an authenticated caller; it does not
 verify WAVS signatures or establish that the action has executed on-chain.
@@ -259,9 +260,12 @@ to broadcast or submit a transaction itself.
 ```
 
 Allowed outcomes are `completed`, `failed`, and `outcome_unknown`. Completion
-requires a transaction hash and no error code. Failure and uncertainty require
+requires a transaction hash and no error code or detail. Failure and uncertainty require
 an `error_code`; a hash is optional. Hashes are stored in uppercase, and an
 existing hash is preserved when omitted. Conflicting hashes are rejected.
+Optional `error_detail` provides a caller-sanitized explanation of 1–1,024 characters.
+It is saved on the action and its transition history; omitting it in a later accepted
+result clears the current detail.
 
 Results require a `submitting` or `outcome_unknown` action. Unknown outcomes can
 resolve to completion or failure; `completed` and `failed` are terminal. Identical
@@ -279,7 +283,7 @@ failure. Detailed operator outcome rules are separate from this API.
 
 `GET /v1/actions/{id}` returns `{"action": {...}, "history": [...]}`. History is
 ordered by increasing transition ID and contains `id`, `action_id`, `status`,
-`error_code`, and `occurred_at`. The action and history are read consistently.
+`error_code`, `error_detail`, and `occurred_at`. The action and history are read consistently.
 
 ### List a user's actions
 
@@ -294,6 +298,45 @@ An action outside that namespace is treated as missing (`404 action_not_found`).
 Malformed IDs, pagination, hashes, or result combinations return `400`; unsupported
 result statuses or unknown result-body fields return `422`. No new registration
 queries or action retry operations are added.
+
+## WAVS aggregator integration
+
+Set `BACKEND_API_URL` to the backend's base URL as reached from the WAVS host
+(default `http://127.0.0.1:8080`) and use the same `BACKEND_API_KEY` as the backend.
+The Docker startup task forwards them as `WAVS_ENV_BACKEND_API_URL` and
+`WAVS_ENV_BACKEND_API_KEY`.
+
+The backend's chain and service-handler settings must match the aggregator's
+`CHAIN` and `SERVICE_HANDLER_CONTRACT_ADDRESS`. The component rejects mismatched
+action records. For operators on another machine, configure a reachable backend
+URL and listener rather than the localhost default.
+
+Before returning a submit instruction, the aggregator uses WAVS's event ID and
+operator payload to create the action and record submission intent. API errors
+stop that instruction; the component does not submit without a durable record.
+An already `submitting` action still accepts operator signatures into WAVS's quorum
+collection. Completed, failed, and unknown actions do not request another submission.
+The API calls themselves are not an exclusive broadcast claim; the service handler
+continues to enforce duplicate-execution protection on-chain.
+
+The pinned WAVS Cosmos runtime waits for execution confirmation before its submit
+callback. Confirmed success reports `completed` with the hash. Its explicit
+`Cosmos Client: tx failed with code: ...` errors report `failed`; replay errors
+remain unknown because another submitter may have executed the event. Other errors
+report `outcome_unknown`. Reports include a stable `error_code` and a safe
+`error_detail`: explicit rejections include the numeric chain code and a bounded
+codespace; uncertain outcomes use a generic explanation. Raw logs and transport
+messages are not stored.
+Insufficient-quorum callbacks leave the action `submitting` while WAVS waits for
+additional signatures.
+
+Callbacks recover the database action ID through idempotent creation, so no local
+ID cache is required. If API reporting fails after submission, the component logs
+an error and returns a callback error without requesting another transaction.
+The saved action can remain unfinished until the planned reconciliation worker
+checks it. No timer-based retry, reconciliation, or email acknowledgment logic is
+implemented here. In particular, a pre-submission API failure does not undo the
+email reader's current read acknowledgment; email recovery belongs to that work.
 
 ## Validation
 
@@ -317,6 +360,17 @@ They do not broadcast chain transactions.
 `registrations.rs` covers registration API, persistence, and worker behavior.
 `actions.rs` covers action API, persistence, and database constraints.
 Each Postgres test applies all migrations to a fresh test database.
+
+Aggregator reporting tests run without a database or chain:
+
+```sh
+cargo test -p app-component-aggregator-submitter --lib
+cargo clippy -p app-component-aggregator-submitter --all-targets -- -D warnings
+cargo build -p app-component-aggregator-submitter --target wasm32-wasip2
+```
+
+These tests exercise the reporting flow with a simulated backend, request encoding,
+and callback classification. They do not run the WAVS host or real chain submission.
 
 For unit tests alone, no database is needed. Plain `cargo test` skips the Postgres
 integration tests. Additional formatting/build checks can also run independently:

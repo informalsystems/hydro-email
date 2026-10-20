@@ -152,8 +152,18 @@ async fn action_result(
                 .bytes()
                 .all(|v| v.is_ascii_lowercase() || v.is_ascii_digit() || v == b'_')
     });
+    // Details must already be sanitized by the caller; reject oversized or control text.
+    if input.error_detail.as_ref().is_some_and(|detail| {
+        detail.trim().is_empty()
+            || detail.chars().count() > 1024
+            || detail.chars().any(char::is_control)
+    }) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_error_detail"));
+    }
     let valid = match input.status {
-        ActionOutcome::Completed => input.tx_hash.is_some() && input.error_code.is_none(),
+        ActionOutcome::Completed => {
+            input.tx_hash.is_some() && input.error_code.is_none() && input.error_detail.is_none()
+        }
         ActionOutcome::Failed | ActionOutcome::OutcomeUnknown => valid_code,
     };
     if !valid {

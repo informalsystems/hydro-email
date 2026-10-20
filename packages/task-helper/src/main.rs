@@ -507,7 +507,10 @@ async fn main() {
                 ]
                 .into_iter()
                 .collect(),
-                env_keys: Default::default(),
+                env_keys: ["WAVS_ENV_BACKEND_API_URL", "WAVS_ENV_BACKEND_API_KEY"]
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
             };
 
             let submit_chain = Submit::Aggregator {
