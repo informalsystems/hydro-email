@@ -504,14 +504,20 @@ async fn unknown_results_can_resolve_but_failed_actions_cannot_restart(pool: PgP
             update_action(&app, id, "submission", None).await.status(),
             StatusCode::OK
         );
-        let unknown = json!({"status": "outcome_unknown", "error_code": "submission_timeout"});
+        let unknown = json!({"status": "outcome_unknown", "error_code": "submission_timeout", "error_detail": "Confirmation timed out."});
         let response = update_action(&app, id, "result", Some(&unknown)).await;
         assert_eq!(response.status(), StatusCode::OK);
         let saved = body(response).await;
+        assert_eq!(saved["error_detail"], "Confirmation timed out.");
+        let snapshot = details(&app, id).await;
+        assert_eq!(
+            snapshot["history"][2]["error_detail"],
+            "Confirmation timed out."
+        );
         let repeated = update_action(&app, id, "result", Some(&unknown)).await;
         assert_eq!(body(repeated).await, saved);
         // A later report can supply a hash while the outcome remains unknown.
-        let with_hash = json!({"status": "outcome_unknown", "error_code": "submission_timeout", "tx_hash": "ab".repeat(32)});
+        let with_hash = json!({"status": "outcome_unknown", "error_code": "submission_timeout", "error_detail": "Confirmation timed out.", "tx_hash": "ab".repeat(32)});
         assert_eq!(
             update_action(&app, id, "result", Some(&with_hash))
                 .await
@@ -540,16 +546,34 @@ async fn unknown_results_can_resolve_but_failed_actions_cannot_restart(pool: PgP
         );
         let value = details(&app, id).await;
         assert_eq!(value["action"]["status"], outcome);
+        assert!(value["action"]["error_detail"].is_null());
+        assert!(value["history"][4]["error_detail"].is_null());
         assert_eq!(value["history"].as_array().unwrap().len(), 5);
     }
     let id = new_action(&app, 3).await;
     update_action(&app, id, "submission", None).await;
-    let failed = json!({"status": "failed", "error_code": "submission_rejected"});
+    let failed = json!({"status": "failed", "error_code": "submission_rejected", "error_detail": "x".repeat(1024)});
     assert_eq!(
         update_action(&app, id, "result", Some(&failed))
             .await
             .status(),
         StatusCode::OK
+    );
+    let failure = details(&app, id).await;
+    assert_eq!(failure["action"]["error_detail"], "x".repeat(1024));
+    assert_eq!(failure["history"][2]["error_detail"], "x".repeat(1024));
+    assert_eq!(
+        update_action(&app, id, "result", Some(&failed))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let changed_detail = json!({"status": "failed", "error_code": "submission_rejected", "error_detail": "Different reason."});
+    assert_eq!(
+        update_action(&app, id, "result", Some(&changed_detail))
+            .await
+            .status(),
+        StatusCode::CONFLICT
     );
     let success = json!({"status": "completed", "tx_hash": "ab".repeat(32)});
     assert_eq!(
@@ -750,6 +774,11 @@ async fn action_operations_validate_authentication_paths_queries_and_results(poo
         json!({"status": "outcome_unknown", "error_code": ""}),
         json!({"status": "failed", "error_code": "a".repeat(65)}),
         json!({"status": "failed", "error_code": "raw error details"}),
+        json!({"status": "failed", "error_code": "rejected", "error_detail": ""}),
+        json!({"status": "failed", "error_code": "rejected", "error_detail": "  "}),
+        json!({"status": "failed", "error_code": "rejected", "error_detail": "x".repeat(1025)}),
+        json!({"status": "failed", "error_code": "rejected", "error_detail": "line\nbreak"}),
+        json!({"status": "completed", "tx_hash": "ab".repeat(32), "error_detail": "Unexpected detail"}),
         json!({"status": "completed", "tx_hash": "short"}),
         json!({"status": "completed", "tx_hash": "gg".repeat(32)}),
     ] {

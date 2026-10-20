@@ -10,6 +10,7 @@ CREATE TABLE actions (
     )),
     tx_hash TEXT,
     error_code TEXT,
+    error_detail TEXT CHECK (char_length(error_detail) BETWEEN 1 AND 1024),
     submitted_at TIMESTAMPTZ,
     last_checked_at TIMESTAMPTZ,
     next_check_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -33,6 +34,7 @@ CREATE TABLE action_transitions (
         'received', 'submitting', 'completed', 'failed', 'outcome_unknown'
     )),
     error_code TEXT,
+    error_detail TEXT CHECK (char_length(error_detail) BETWEEN 1 AND 1024),
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

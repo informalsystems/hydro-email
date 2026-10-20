@@ -22,6 +22,7 @@ pub struct Action {
     pub status: String,
     pub tx_hash: Option<String>,
     pub error_code: Option<String>,
+    pub error_detail: Option<String>,
     pub submitted_at: Option<DateTime<Utc>>,
     pub last_checked_at: Option<DateTime<Utc>>,
     pub next_check_at: DateTime<Utc>,
@@ -41,6 +42,7 @@ pub struct ActionTransition {
     pub action_id: i64,
     pub status: String,
     pub error_code: Option<String>,
+    pub error_detail: Option<String>,
     pub occurred_at: DateTime<Utc>,
 }
 
@@ -80,6 +82,7 @@ pub struct ActionResult {
     pub status: ActionOutcome,
     pub tx_hash: Option<String>,
     pub error_code: Option<String>,
+    pub error_detail: Option<String>,
 }
 
 pub enum UpdateAction {
@@ -140,7 +143,7 @@ impl ActionStore {
     }
 
     pub async fn submission(&self, id: i64) -> Result<UpdateAction> {
-        self.update(id, "submitting", None, None).await
+        self.update(id, "submitting", None, None, None).await
     }
 
     pub async fn report_result(&self, id: i64, result: ActionResult) -> Result<UpdateAction> {
@@ -149,6 +152,7 @@ impl ActionStore {
             result.status.as_str(),
             result.tx_hash,
             result.error_code,
+            result.error_detail,
         )
         .await
     }
@@ -159,6 +163,7 @@ impl ActionStore {
         status: &str,
         tx_hash: Option<String>,
         error_code: Option<String>,
+        error_detail: Option<String>,
     ) -> Result<UpdateAction> {
         let mut tx = self.pool.begin().await?;
         let current: Option<Action> = sqlx::query_as(
@@ -181,6 +186,7 @@ impl ActionStore {
         if current.status == status
             && current.tx_hash == tx_hash
             && current.error_code == error_code
+            && current.error_detail == error_detail
         {
             tx.commit().await?;
             return Ok(UpdateAction::Updated(Box::new(current)));
@@ -193,7 +199,7 @@ impl ActionStore {
             return Ok(UpdateAction::Conflict);
         }
         let action = sqlx::query_as(
-            "UPDATE actions SET status=$2, tx_hash=$3, error_code=$4,
+            "UPDATE actions SET status=$2, tx_hash=$3, error_code=$4, error_detail=$5,
              submitted_at=CASE WHEN $2='submitting' THEN now() ELSE submitted_at END,
              updated_at=now(), next_check_at=now() WHERE id=$1 RETURNING *",
         )
@@ -201,14 +207,16 @@ impl ActionStore {
         .bind(status)
         .bind(tx_hash)
         .bind(&error_code)
+        .bind(&error_detail)
         .fetch_one(&mut *tx)
         .await?;
         sqlx::query(
-            "INSERT INTO action_transitions (action_id, status, error_code) VALUES ($1, $2, $3)",
+            "INSERT INTO action_transitions (action_id, status, error_code, error_detail) VALUES ($1, $2, $3, $4)",
         )
         .bind(id)
         .bind(status)
         .bind(error_code)
+        .bind(error_detail)
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
