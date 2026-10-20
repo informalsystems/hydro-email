@@ -43,15 +43,15 @@ impl Guest for Component {
 async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse>> {
     match trigger_action.data {
         TriggerData::Cron(_) => {
-            // TODO - read a batch instead of just one email
-            let email = match email::read_next_email().await? {
+            let fetched = match email::read_next_email().await? {
                 Some(email) => email,
                 None => {
                     return Ok(Vec::new());
                 }
             };
 
-            verify_email(&email).await?;
+            let email = &fetched.message;
+            verify_email(email).await?;
 
             let event_id_salt = email.event_id_salt()?;
 
@@ -59,20 +59,22 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
 
             let email = UserIdEmail {
                 from: user_id,
-                subject: email.subject.unwrap_or_default(),
+                subject: email.subject.clone().unwrap_or_default(),
             };
 
             println!("Got email: {:#?}", email);
             println!("Proxy execute msg: {:#?}", email.proxy_execute_msg());
             println!("Event ID salt: {}", const_hex::encode(&event_id_salt));
 
-            return Ok(vec![WasmResponse {
+            let response = WasmResponse {
                 payload: CustomExecuteMsg::Email(email)
                     .encode()
                     .map_err(|e| anyhow::anyhow!("{e:?}"))?,
                 ordering: None,
                 event_id_salt: Some(event_id_salt),
-            }]);
+            };
+            fetched.remember()?;
+            return Ok(vec![response]);
         }
         TriggerData::Raw(data) => {
             let data = std::str::from_utf8(&data)?;
@@ -86,6 +88,7 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                         }
                     };
 
+                    let email = email.message;
                     println!("{:#?}", email);
 
                     let verification_result = verify_email(&email).await;

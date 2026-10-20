@@ -1,6 +1,6 @@
 use crate::{
     config::AgentMailRestApiConfig,
-    email::parser::EmailMessage,
+    email::ReadEmail,
     error::{AppError, AppResult},
 };
 
@@ -12,7 +12,7 @@ use crate::{
 // is implemented.
 pub async fn read_next_email_rest_api(
     _config: AgentMailRestApiConfig,
-) -> AppResult<Option<EmailMessage>> {
+) -> AppResult<Option<ReadEmail>> {
     Err(AppError::NotImplemented(
         "agentmail-rest-api credential kind is a placeholder; use plain-imap for now",
     ))

@@ -4,13 +4,17 @@ pub mod connection;
 use crate::{
     config::{ImapConfig, DEBUG},
     email::{
+        cache::ProcessedEmails,
         imap::{auth::auth_session, connection::ImapConnection},
         parser::EmailMessage,
+        ReadEmail,
     },
     error::{AppError, AppResult},
 };
 
-pub async fn read_next_email_imap(config: ImapConfig) -> AppResult<Option<EmailMessage>> {
+pub async fn read_next_email_imap(config: ImapConfig) -> AppResult<Option<ReadEmail>> {
+    // Snapshot before the mailbox search so cleanup cannot erase newer entries.
+    let cache = ProcessedEmails::open(&config).map_err(AppError::EmailCache)?;
     let connection = ImapConnection::new(&config).await?;
     println!("Successfully connected to {config}");
 
@@ -36,28 +40,29 @@ pub async fn read_next_email_imap(config: ImapConfig) -> AppResult<Option<EmailM
 
     let mailbox = session.select("INBOX")?;
 
-    if mailbox.exists == 0 {
-        return Ok(None);
-    }
-
+    let uid_validity = mailbox
+        .uid_validity
+        .filter(|value| *value != 0)
+        .ok_or(AppError::MissingUidValidity)?;
     let uids = session.uid_search("UNSEEN")?;
-    if uids.is_empty() {
+    let Some(id) = cache
+        .next_unread(uid_validity, &uids)
+        .map_err(AppError::EmailCache)?
+    else {
         return Ok(None);
-    }
+    };
 
-    let latest_uid = *uids.iter().max().unwrap();
-
-    let fetches = session.uid_fetch(latest_uid.to_string(), "(ENVELOPE BODY[])")?;
+    let fetches = session.uid_fetch(id.uid.to_string(), "(ENVELOPE BODY[])")?;
 
     let fetch = fetches
         .iter()
         .next()
-        .ok_or(AppError::FailedToFetchEmail(latest_uid))?;
+        .ok_or(AppError::FailedToFetchEmail(id.uid))?;
 
     let message = EmailMessage::parse_imap(&fetch).map_err(AppError::AnyMessageParse)?;
 
     // AgentMail doesn't set \Seen flag on a BODY[] fetch, so mark it as \Seen to avoid processing the same email again
-    session.uid_store(latest_uid.to_string(), "+FLAGS (\\Seen)")?;
+    session.uid_store(id.uid.to_string(), "+FLAGS (\\Seen)")?;
 
-    Ok(Some(message))
+    Ok(Some(ReadEmail { message, cache, id }))
 }
