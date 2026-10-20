@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod imap;
 mod parser;
 pub mod rest_api;
@@ -12,7 +13,19 @@ use crate::{
     error::{AppError, AppResult},
 };
 
-pub async fn read_next_email() -> AppResult<Option<EmailMessage>> {
+pub struct ReadEmail {
+    pub message: EmailMessage,
+    pub cache: cache::ProcessedEmails,
+    pub id: cache::MessageId,
+}
+
+impl ReadEmail {
+    pub fn remember(&self) -> AppResult<()> {
+        self.cache.remember(self.id).map_err(AppError::EmailCache)
+    }
+}
+
+pub async fn read_next_email() -> AppResult<Option<ReadEmail>> {
     let credential_kind = get_env_var("WAVS_ENV_MAIL_CREDENTIAL_KIND")?.to_lowercase();
 
     match credential_kind.as_str() {

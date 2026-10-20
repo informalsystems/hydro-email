@@ -24,6 +24,12 @@ pub enum AppError {
     #[error("Failed to fetch email, uid: {0}")]
     FailedToFetchEmail(u32),
 
+    #[error("IMAP server did not provide UIDVALIDITY")]
+    MissingUidValidity,
+
+    #[error("Email cache: {0:#}")]
+    EmailCache(anyhow::Error),
+
     #[error("{0:?}")]
     AnyMessageParse(anyhow::Error),
 

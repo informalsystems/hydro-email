@@ -1,14 +1,16 @@
+# AgentMail
+
 This project reads mail from an [AgentMail](https://docs.agentmail.to/imap-smtp) inbox over plain IMAP. No OAuth flow is needed.
 
-### 1. Create an AgentMail inbox
+## 1. Create an AgentMail inbox
 
 Sign up at [AgentMail](https://agentmail.to) and create an inbox (e.g. via the console or the `inboxes.create` API). Note the inbox's email address — this is your IMAP username.
 
-### 2. Create an API key
+## 2. Create an API key
 
 Create (or copy) an API key from the AgentMail console. This is your IMAP password.
 
-### 3. Configure `.env`
+## 3. Configure `.env`
 
 ```bash
 WAVS_ENV_MAIL_CREDENTIAL_KIND="plain-imap"
@@ -20,6 +22,19 @@ WAVS_ENV_IMAP_PASSWORD="<AgentMail API key>"
 ```
 
 See [.env.example](../.env.example) for the full block, including local-dev (GreenMail) settings.
+
+### Polling and deduplication
+
+Each poll checks the unread message identifiers and processes at most one email,
+oldest first. Each operator keeps its own in-memory cache to skip emails it has
+already processed. A successful unread search removes cached entries that are
+no longer unread.
+
+Restarting an operator clears its cache, so unread emails may be processed again.
+Contract replay protection prevents duplicate successful execution.
+
+Emails are still marked read when fetched, including when using `read-mail`.
+Moving acknowledgment to the backend after processing is separate work.
 
 ### AgentMail REST API — not yet implemented
 
