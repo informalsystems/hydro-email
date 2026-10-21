@@ -192,6 +192,8 @@ Migration `0002_actions.sql` adds storage for WAVS actions:
   reconciliation timestamps. Events are unique per chain, service-handler address,
   and 20-byte event ID stored as lowercase hex.
 - `action_transitions`: history of outcome changes for each action.
+- `action_mailbox_messages`: mailbox identifiers and acknowledgment state, separate
+  from execution. An action can have multiple messages, such as duplicate copies.
 
 Actions start as `received`, then become `submitting` while WAVS handles submission
 and confirmation. Outcomes are `completed`, `failed`, or `outcome_unknown`.
@@ -225,11 +227,33 @@ it again. The backend scopes the action to `BACKEND_CHAIN_KEY` and
 Action creation is available with provisioning disabled and does not submit transactions.
 The handler address must be configured.
 
+`POST /v1/actions` also accepts an optional `mailbox_message` alongside `event_id`
+and `payload`:
+
+```json
+{
+  "mailbox_message": {
+    "folder": "INBOX",
+    "uid_validity": 100,
+    "uid": 10
+  }
+}
+```
+
+These fields identify an email in the configured receiving account so the backend
+can later mark it read. Each mailbox message belongs to one action. An action can
+have multiple messages, such as duplicate deliveries that each need acknowledgment.
+Repeating the same metadata does not create another record or reset acknowledgment.
+
+The field is optional while forwarding these identifiers from WAVS is still
+pending in a follow-up PR.
+
 - `201`: action and initial history entry created with status `received`.
 - `200`: same event and payload already exist; current record returned unchanged.
-- `400`: invalid event or user ID.
+- `400`: invalid event, user ID, or mailbox identifiers.
 - `401`: missing or invalid API credential.
-- `409`: event exists with different sender or payload.
+- `409`: event exists with different sender or payload, or the mailbox message
+  already belongs to another action.
 - `413`: request exceeds 4 KiB.
 - `422`: malformed request shape, unsupported payload, or unknown top-level field.
 - `503`: database unavailable.
@@ -283,7 +307,8 @@ failure. Detailed operator outcome rules are separate from this API.
 
 ### Read action status and history
 
-`GET /v1/actions/{id}` returns `{"action": {...}, "history": [...]}`. History is
+`GET /v1/actions/{id}` returns `{"action": {...}, "history": [...]}`. Mailbox
+information stays internal. History is
 ordered by increasing transition ID and contains `id`, `action_id`, `status`,
 `error_code`, `error_detail`, and `occurred_at`. The action and history are read consistently.
 
@@ -300,6 +325,23 @@ An action outside that namespace is treated as missing (`404 action_not_found`).
 Malformed IDs, pagination, hashes, or result combinations return `400`; unsupported
 result statuses or unknown result-body fields return `422`. No new registration
 queries or action retry operations are added.
+
+### Mailbox acknowledgment
+
+Each mailbox message has its own acknowledgment state:
+
+- `waiting`: the action has no final outcome yet.
+- `pending`: the action completed or failed, and the message needs acknowledgment.
+- `acknowledged`: the message has been acknowledged.
+
+Unresolved `outcome_unknown` actions remain waiting. Deciding when to close them
+is separate reconciliation work.
+
+Acknowledgment failures can be retried without resubmitting the action. This state
+is internal to the backend and has no HTTP endpoints.
+
+The actual mailbox worker and switch to `BODY.PEEK[]` will follow in a separate
+PR. For now, the operator still marks emails read when fetching them.
 
 ## WAVS aggregator integration
 

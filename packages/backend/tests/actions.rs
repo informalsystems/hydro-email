@@ -2,6 +2,7 @@
 use app_backend::{
     action_store::ActionStore,
     api::{router, ApiState},
+    mailbox_store::{AcknowledgmentResult, MailboxMessage, UpdateAcknowledgment},
     registration_store::RegistrationStore,
 };
 use axum::{
@@ -423,6 +424,480 @@ async fn details(app: &Router, id: i64) -> Value {
     let response = request(app, "GET", &format!("/v1/actions/{id}"), None, Some(KEY)).await;
     assert_eq!(response.status(), StatusCode::OK);
     body(response).await
+}
+
+fn mailbox_request(uid: u32) -> Value {
+    let mut input = action_request();
+    input["mailbox_message"] = json!({
+        "folder": "INBOX", "uid_validity": 100, "uid": uid,
+    });
+    input
+}
+
+fn mailbox_store(pool: &PgPool, chain: &str, handler: &str) -> ActionStore {
+    ActionStore {
+        pool: pool.clone(),
+        chain_key: chain.into(),
+        service_handler_address: handler.into(),
+    }
+}
+
+// Read private state directly from Postgres, never through the action API.
+async fn mailbox_messages(pool: &PgPool, action_id: i64) -> Value {
+    let messages: Vec<MailboxMessage> =
+        sqlx::query_as("SELECT * FROM action_mailbox_messages WHERE action_id=$1 ORDER BY id")
+            .bind(action_id)
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    serde_json::to_value(messages).unwrap()
+}
+
+fn acknowledgment_retry() -> AcknowledgmentResult {
+    AcknowledgmentResult::Retry {
+        error_code: "mailbox_unavailable".into(),
+        retry_after_seconds: 60,
+    }
+}
+
+async fn save_ack(
+    store: &ActionStore,
+    action_id: i64,
+    message_id: i64,
+    result: AcknowledgmentResult,
+) -> Value {
+    let UpdateAcknowledgment::Updated(message) = store
+        .report_acknowledgment(action_id, message_id, result)
+        .await
+        .unwrap()
+    else {
+        panic!("Expected acknowledgment update");
+    };
+    serde_json::to_value(message).unwrap()
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn mailbox_identity_reports_are_idempotent_and_support_duplicate_copies(pool: PgPool) {
+    let app = app(&pool, "dev:local", "handler");
+    let store = mailbox_store(&pool, "dev:local", "handler");
+    let mut tasks = Vec::new();
+    for _ in 0..8 {
+        let app = app.clone();
+        tasks.push(tokio::spawn(async move {
+            let response = post(&app, &mailbox_request(u32::MAX), Some(KEY)).await;
+            assert!(matches!(
+                response.status(),
+                StatusCode::OK | StatusCode::CREATED
+            ));
+            let action = body(response).await;
+            assert!(action.get("mailbox_message").is_none());
+            action["id"].as_i64().unwrap()
+        }));
+    }
+    let mut ids = Vec::new();
+    for task in tasks {
+        ids.push(task.await.unwrap());
+    }
+    assert!(ids.iter().all(|id| *id == ids[0]));
+    let id = ids[0];
+    let before = mailbox_messages(&pool, id).await;
+    assert_eq!(before.as_array().unwrap().len(), 1);
+    assert_eq!(before[0]["uid"], u32::MAX);
+    assert_eq!(before[0]["acknowledgment_status"], "waiting");
+    assert!(store.pending_acknowledgments(50).await.unwrap().is_empty());
+    let public_details = details(&app, id).await;
+    assert!(public_details.get("mailbox_messages").is_none());
+    assert_eq!(
+        post(&app, &action_request(), Some(KEY)).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(mailbox_messages(&pool, id).await, before);
+    let mut copy = mailbox_request(1);
+    assert_eq!(post(&app, &copy, Some(KEY)).await.status(), StatusCode::OK);
+    copy["mailbox_message"]["uid_validity"] = json!(101);
+    assert_eq!(post(&app, &copy, Some(KEY)).await.status(), StatusCode::OK);
+    assert_eq!(
+        mailbox_messages(&pool, id).await.as_array().unwrap().len(),
+        3
+    );
+    assert_eq!(details(&app, id).await, public_details);
+    let path = format!("/v1/actions?user_id={}", "02".repeat(32));
+    let listed = body(request(&app, "GET", &path, None, Some(KEY)).await).await;
+    assert!(listed["actions"][0].get("mailbox_messages").is_none());
+    assert_counts(&pool, 1, 1).await;
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn acknowledgment_retries_persist_without_resubmitting_or_overwriting_success(pool: PgPool) {
+    let app = app(&pool, "dev:local", "handler");
+    let store = mailbox_store(&pool, "dev:local", "handler");
+    let id = body(post(&app, &mailbox_request(10), Some(KEY)).await).await["id"]
+        .as_i64()
+        .unwrap();
+    let message_id = mailbox_messages(&pool, id).await[0]["id"].as_i64().unwrap();
+    assert!(matches!(
+        store
+            .report_acknowledgment(id, message_id, AcknowledgmentResult::Acknowledged)
+            .await
+            .unwrap(),
+        UpdateAcknowledgment::Conflict
+    ));
+    assert_eq!(
+        update_action(&app, id, "submission", None).await.status(),
+        StatusCode::OK
+    );
+    let completed = json!({"status": "completed", "tx_hash": "ab".repeat(32)});
+    assert_eq!(
+        update_action(&app, id, "result", Some(&completed))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let action_before = details(&app, id).await;
+    assert_eq!(store.pending_acknowledgments(50).await.unwrap().len(), 1);
+    let retried = save_ack(&store, id, message_id, acknowledgment_retry()).await;
+    assert_eq!(retried["acknowledgment_status"], "pending");
+    assert_eq!(retried["attempt_count"], 1);
+    assert_eq!(retried["last_error_code"], "mailbox_unavailable");
+    assert!(retried["last_attempt_at"].is_string());
+    assert!(retried["next_attempt_at"].is_string());
+    assert!(store.pending_acknowledgments(50).await.unwrap().is_empty());
+    // Reconstruct the store as after a backend restart: the retry survives.
+    let restarted = mailbox_store(&pool, "dev:local", "handler");
+    assert_eq!(mailbox_messages(&pool, id).await[0], retried);
+    sqlx::query(
+        "UPDATE action_mailbox_messages SET next_attempt_at=now()-interval '1 second' WHERE id=$1",
+    )
+    .bind(message_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        restarted.pending_acknowledgments(50).await.unwrap().len(),
+        1
+    );
+    let acknowledged = save_ack(
+        &restarted,
+        id,
+        message_id,
+        AcknowledgmentResult::Acknowledged,
+    )
+    .await;
+    assert_eq!(acknowledged["acknowledgment_status"], "acknowledged");
+    assert_eq!(acknowledged["attempt_count"], 2);
+    assert!(acknowledged["acknowledged_at"].is_string());
+    assert!(acknowledged["next_attempt_at"].is_null());
+    assert!(acknowledged["last_error_code"].is_null());
+    assert!(restarted
+        .pending_acknowledgments(50)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        save_ack(
+            &restarted,
+            id,
+            message_id,
+            AcknowledgmentResult::Acknowledged
+        )
+        .await,
+        acknowledged
+    );
+    assert!(matches!(
+        restarted
+            .report_acknowledgment(id, message_id, acknowledgment_retry())
+            .await
+            .unwrap(),
+        UpdateAcknowledgment::Conflict
+    ));
+    assert_eq!(
+        post(&app, &mailbox_request(10), Some(KEY)).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(mailbox_messages(&pool, id).await[0], acknowledged);
+    assert_eq!(details(&app, id).await, action_before);
+    assert_counts(&pool, 1, 3).await;
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn mailbox_eligibility_handles_unknown_outcomes_late_success_and_late_identifiers(
+    pool: PgPool,
+) {
+    let app = app(&pool, "dev:local", "handler");
+    let store = mailbox_store(&pool, "dev:local", "handler");
+    for (event, status, expected) in [(1, "failed", "pending"), (2, "outcome_unknown", "waiting")] {
+        let mut input = mailbox_request(event);
+        input["event_id"] = json!(format!("{event:02x}").repeat(20));
+        let id = body(post(&app, &input, Some(KEY)).await).await["id"]
+            .as_i64()
+            .unwrap();
+        update_action(&app, id, "submission", None).await;
+        let outcome = json!({"status": status, "error_code": "reported_failure"});
+        assert_eq!(
+            update_action(&app, id, "result", Some(&outcome))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let message = mailbox_messages(&pool, id).await[0].clone();
+        assert_eq!(message["acknowledgment_status"], expected);
+        let message_id = message["id"].as_i64().unwrap();
+        if status == "failed" {
+            save_ack(&store, id, message_id, AcknowledgmentResult::Acknowledged).await;
+        } else {
+            assert!(matches!(
+                store
+                    .report_acknowledgment(id, message_id, AcknowledgmentResult::Acknowledged)
+                    .await
+                    .unwrap(),
+                UpdateAcknowledgment::Conflict
+            ));
+        }
+        let before = mailbox_messages(&pool, id).await[0].clone();
+        let completed = json!({"status": "completed", "tx_hash": "ab".repeat(32)});
+        assert_eq!(
+            update_action(&app, id, "result", Some(&completed))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let after = mailbox_messages(&pool, id).await[0].clone();
+        if status == "failed" {
+            assert_eq!(after, before);
+        } else {
+            assert_eq!(after["acknowledgment_status"], "pending");
+        }
+    }
+    let id = new_action(&app, 3).await;
+    update_action(&app, id, "submission", None).await;
+    update_action(
+        &app,
+        id,
+        "result",
+        Some(&json!({"status":"completed", "tx_hash":"ab".repeat(32)})),
+    )
+    .await;
+    let mut late = mailbox_request(3);
+    late["event_id"] = json!("03".repeat(20));
+    assert_eq!(post(&app, &late, Some(KEY)).await.status(), StatusCode::OK);
+    assert_eq!(
+        mailbox_messages(&pool, id).await[0]["acknowledgment_status"],
+        "pending"
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn mailbox_identity_is_global_and_queries_remain_deployment_scoped(pool: PgPool) {
+    let local = app(&pool, "dev:local", "handler");
+    let input = mailbox_request(10);
+    let id = body(post(&local, &input, Some(KEY)).await).await["id"]
+        .as_i64()
+        .unwrap();
+    let before = mailbox_messages(&pool, id).await;
+    let mut conflicting = input.clone();
+    conflicting["event_id"] = json!("02".repeat(20));
+    assert_eq!(
+        post(&local, &conflicting, Some(KEY)).await.status(),
+        StatusCode::CONFLICT
+    );
+    assert_counts(&pool, 1, 1).await;
+    conflicting = mailbox_request(11);
+    conflicting["payload"]["email"]["subject"] = json!("different");
+    assert_eq!(
+        post(&local, &conflicting, Some(KEY)).await.status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(mailbox_messages(&pool, id).await, before);
+    update_action(&local, id, "submission", None).await;
+    let completed = json!({"status": "completed", "tx_hash": "ab".repeat(32)});
+    assert_eq!(
+        update_action(&local, id, "result", Some(&completed))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let before = mailbox_messages(&pool, id).await;
+    let message_id = before[0]["id"].as_i64().unwrap();
+    for (uid, (chain, handler)) in [20, 21]
+        .into_iter()
+        .zip([("dev:other", "handler"), ("dev:local", "other-handler")])
+    {
+        let other = app(&pool, chain, handler);
+        // One physical mailbox entry cannot belong to another action, even in another deployment.
+        assert_eq!(
+            post(&other, &input, Some(KEY)).await.status(),
+            StatusCode::CONFLICT
+        );
+        let mut other_input = input.clone();
+        other_input["mailbox_message"]["uid"] = json!(uid);
+        let response = post(&other, &other_input, Some(KEY)).await;
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let other_id = body(response).await["id"].as_i64().unwrap();
+        update_action(&other, other_id, "submission", None).await;
+        assert_eq!(
+            update_action(&other, other_id, "result", Some(&completed))
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        let other_store = mailbox_store(&pool, chain, handler);
+        let pending = other_store.pending_acknowledgments(50).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].action_id, other_id);
+        assert!(matches!(
+            other_store
+                .report_acknowledgment(id, message_id, AcknowledgmentResult::Acknowledged)
+                .await
+                .unwrap(),
+            UpdateAcknowledgment::NotFound
+        ));
+    }
+    let pending = mailbox_store(&pool, "dev:local", "handler")
+        .pending_acknowledgments(50)
+        .await
+        .unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].action_id, id);
+    assert_eq!(mailbox_messages(&pool, id).await, before);
+    assert_counts(&pool, 3, 9).await;
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn mailbox_creation_and_eligibility_are_atomic_with_action_history(pool: PgPool) {
+    let app = app(&pool, "dev:local", "handler");
+    sqlx::query(
+        "ALTER TABLE action_mailbox_messages ADD CONSTRAINT reject_mailbox CHECK (false) NOT VALID",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        post(&app, &mailbox_request(10), Some(KEY)).await.status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_counts(&pool, 0, 0).await;
+    sqlx::query("ALTER TABLE action_mailbox_messages DROP CONSTRAINT reject_mailbox")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let id = body(post(&app, &mailbox_request(10), Some(KEY)).await).await["id"]
+        .as_i64()
+        .unwrap();
+    update_action(&app, id, "submission", None).await;
+    let before = details(&app, id).await;
+    let before_messages = mailbox_messages(&pool, id).await;
+    sqlx::query("ALTER TABLE action_mailbox_messages ADD CONSTRAINT reject_pending CHECK (acknowledgment_status <> 'pending') NOT VALID")
+        .execute(&pool).await.unwrap();
+    assert_eq!(
+        update_action(
+            &app,
+            id,
+            "result",
+            Some(&json!({"status":"completed", "tx_hash":"ab".repeat(32)}))
+        )
+        .await
+        .status(),
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(details(&app, id).await, before);
+    assert_eq!(mailbox_messages(&pool, id).await, before_messages);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn mailbox_metadata_is_validated_and_kept_internal(pool: PgPool) {
+    let app = app(&pool, "dev:local", "handler");
+    let store = mailbox_store(&pool, "dev:local", "handler");
+    for key in [None, Some("wrong-key")] {
+        assert_eq!(
+            post(&app, &mailbox_request(10), key).await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    for (field, value) in [
+        ("folder", json!("")),
+        ("folder", json!(" ")),
+        ("folder", json!("INBOX\n")),
+        ("folder", json!("x".repeat(256))),
+        ("uid", json!(0)),
+        ("uid_validity", json!(0)),
+    ] {
+        let mut input = mailbox_request(10);
+        input["mailbox_message"][field] = value;
+        assert_eq!(
+            post(&app, &input, Some(KEY)).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut unknown = mailbox_request(10);
+    unknown["mailbox_message"]["password"] = json!("must-not-be-accepted");
+    assert_eq!(
+        post(&app, &unknown, Some(KEY)).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    for value in [json!(-1), json!(4294967296_u64)] {
+        let mut input = mailbox_request(10);
+        input["mailbox_message"]["uid"] = value;
+        assert_eq!(
+            post(&app, &input, Some(KEY)).await.status(),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+    }
+    let id = body(post(&app, &mailbox_request(10), Some(KEY)).await).await["id"]
+        .as_i64()
+        .unwrap();
+    let message_id = mailbox_messages(&pool, id).await[0]["id"].as_i64().unwrap();
+    assert!(details(&app, id).await.get("mailbox_messages").is_none());
+    for (method, path, input) in [
+        ("GET", "/v1/mailbox-acknowledgments".to_owned(), None),
+        (
+            "POST",
+            format!("/v1/actions/{id}/mailbox-messages/{message_id}/acknowledgment"),
+            Some(json!({"status":"acknowledged"})),
+        ),
+    ] {
+        assert_eq!(
+            request(&app, method, &path, input.as_ref(), Some(KEY))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+    for limit in [0, 101] {
+        assert!(store.pending_acknowledgments(limit).await.is_err());
+    }
+    for (error_code, retry_after_seconds) in [
+        ("".into(), 1),
+        ("raw error".into(), 1),
+        ("x".repeat(65), 1),
+        ("unavailable".into(), 0),
+        ("unavailable".into(), 86401),
+    ] {
+        assert!(store
+            .report_acknowledgment(
+                id,
+                message_id,
+                AcknowledgmentResult::Retry {
+                    error_code,
+                    retry_after_seconds
+                }
+            )
+            .await
+            .is_err());
+    }
+    assert!(matches!(
+        store
+            .report_acknowledgment(id, 999999, AcknowledgmentResult::Acknowledged)
+            .await
+            .unwrap(),
+        UpdateAcknowledgment::NotFound
+    ));
+    assert_counts(&pool, 1, 1).await;
 }
 
 #[sqlx::test(migrations = "./migrations")]

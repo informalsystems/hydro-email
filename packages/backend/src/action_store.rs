@@ -4,6 +4,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{types::Json, PgPool};
 
+use crate::mailbox_store::MailboxMessageIdentity;
+
 #[derive(Clone)]
 pub struct ActionStore {
     pub pool: PgPool,
@@ -224,11 +226,26 @@ impl ActionStore {
         .bind(error_detail)
         .execute(&mut *tx)
         .await?;
+        if matches!(status, "completed" | "failed") {
+            sqlx::query(
+                "UPDATE action_mailbox_messages SET acknowledgment_status='pending',
+                 next_attempt_at=now(), updated_at=now()
+                 WHERE action_id=$1 AND acknowledgment_status='waiting'",
+            )
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
         tx.commit().await?;
         Ok(UpdateAction::Updated(Box::new(action)))
     }
 
-    pub async fn create(&self, event_id: &str, payload: CustomExecuteMsg) -> Result<CreateAction> {
+    pub async fn create(
+        &self,
+        event_id: &str,
+        payload: CustomExecuteMsg,
+        mailbox_message: Option<MailboxMessageIdentity>,
+    ) -> Result<CreateAction> {
         let CustomExecuteMsg::Email(email) = &payload;
         let mut tx = self.pool.begin().await?;
         let created: Option<Action> = sqlx::query_as(
@@ -245,30 +262,42 @@ impl ActionStore {
         .fetch_optional(&mut *tx)
         .await?;
 
-        if let Some(action) = created {
+        let is_new = created.is_some();
+        let action = if let Some(action) = created {
             sqlx::query(
                 "INSERT INTO action_transitions (action_id, status) VALUES ($1, 'received')",
             )
             .bind(action.id)
             .execute(&mut *tx)
             .await?;
-            tx.commit().await?;
-            return Ok(CreateAction::Created(action));
-        }
-
-        // A separate statement sees a concurrent creator's committed row.
-        let action: Action = sqlx::query_as(
-            "SELECT * FROM actions WHERE chain_key=$1 AND service_handler_address=$2 AND event_id=$3",
+            action
+        } else {
+            // A separate statement sees a concurrent creator's committed row.
+            sqlx::query_as::<_, Action>(
+            "SELECT * FROM actions WHERE chain_key=$1 AND service_handler_address=$2 AND event_id=$3 FOR UPDATE",
         )
         .bind(&self.chain_key)
         .bind(&self.service_handler_address)
         .bind(event_id)
         .fetch_one(&mut *tx)
-        .await?;
+        .await?
+        };
         if action.user_id != email.from.as_str() || action.payload.0 != payload {
             return Ok(CreateAction::Conflict);
         }
+        if let Some(message) = mailbox_message {
+            if !self
+                .attach_mailbox_message(&mut tx, action.id, &action.status, &message)
+                .await?
+            {
+                return Ok(CreateAction::Conflict);
+            }
+        }
         tx.commit().await?;
-        Ok(CreateAction::Existing(action))
+        Ok(if is_new {
+            CreateAction::Created(action)
+        } else {
+            CreateAction::Existing(action)
+        })
     }
 }
