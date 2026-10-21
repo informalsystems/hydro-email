@@ -33,8 +33,18 @@ no longer unread.
 Restarting an operator clears its cache, so unread emails may be processed again.
 Contract replay protection prevents duplicate successful execution.
 
-Emails are still marked read when fetched, including when using `read-mail`.
-Moving acknowledgment to the backend after processing is separate work.
+Operators fetch with `BODY.PEEK[]`, leaving emails unread for other operators.
+The `read-mail` command also leaves them unread.
+
+The backend runs the acknowledgment worker. Give it the same
+`WAVS_ENV_MAIL_CREDENTIAL_KIND` and `WAVS_ENV_IMAP_*` settings as the operators;
+these settings are required at backend startup.
+The backend marks each message read after its action completes or fails. Mailbox
+failures are retried after a delay, including after a backend restart.
+Unresolved `outcome_unknown` actions remain unread.
+
+Operators register mailbox identifiers with the backend before returning a signed
+action. These identifiers stay out of the signed payload and action responses.
 
 ### AgentMail REST API — not yet implemented
 

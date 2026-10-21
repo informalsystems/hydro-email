@@ -1,0 +1,16 @@
+[package]
+name = "app-component-backend-client"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+app-contract-api.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wstd.workspace = true
+
+[dev-dependencies]
+futures.workspace = true

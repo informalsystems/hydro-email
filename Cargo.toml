@@ -5,6 +5,7 @@ members = [
     "packages/contracts/service-handler",
     "packages/contracts/user-registry",
     "packages/components/operator/email-reader",
+    "packages/components/backend-client",
     "packages/components/aggregator/submitter",
     "packages/client",
     "packages/utils",
@@ -46,6 +47,7 @@ app-contract-service-handler = { path = "packages/contracts/service-handler" }
 app-contract-user-registry = { path = "packages/contracts/user-registry" }
 app-utils = { path = "packages/utils" }
 app-client = { path = "packages/client" }
+app-component-backend-client = { path = "packages/components/backend-client" }
 app-tests-common = { path = "packages/tests/common" }
 
 # Error handling

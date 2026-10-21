@@ -7,6 +7,7 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+app-component-backend-client.workspace = true
 app-client = { workspace = true, features = ["wasi"] }
 app-contract-api = { workspace = true }
 layer-climb = { workspace = true }

@@ -1,17 +1,7 @@
 use anyhow::{bail, ensure, Result};
+use app_component_backend_client::ActionRecord;
 use app_contract_api::service_handler::msg::CustomExecuteMsg;
-use serde::Deserialize;
 use serde_json::{json, Value};
-
-#[derive(Debug, Clone, Deserialize)]
-pub(crate) struct ActionRecord {
-    pub id: i64,
-    pub chain_key: String,
-    pub service_handler_address: String,
-    pub event_id: String,
-    pub payload: CustomExecuteMsg,
-    pub status: String,
-}
 
 pub(crate) trait Backend {
     async fn post(&self, path: &str, body: Option<Value>) -> Result<ActionRecord>;

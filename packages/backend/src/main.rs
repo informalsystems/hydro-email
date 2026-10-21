@@ -6,6 +6,7 @@ use app_backend::{
     api::{self, ApiState},
     chain::CosmosChain,
     config::Config,
+    mailbox_worker::{ImapMailbox, MailboxWorker},
     registration_store::RegistrationStore,
     worker::Worker,
 };
@@ -30,13 +31,18 @@ async fn main() -> Result<()> {
         chain_key: config.chain_key.clone(),
         registry_address: config.registry_address.clone(),
     };
+    let actions = ActionStore {
+        pool: store.pool.clone(),
+        chain_key: config.chain_key.clone(),
+        service_handler_address: config.service_handler_address.clone(),
+    };
+    let mailbox_worker = MailboxWorker {
+        store: actions.clone(),
+        mailbox: Arc::new(ImapMailbox::from_env()?),
+    };
     let app = api::router(ApiState {
         store: store.clone(),
-        actions: ActionStore {
-            pool: store.pool.clone(),
-            chain_key: config.chain_key.clone(),
-            service_handler_address: config.service_handler_address.clone(),
-        },
+        actions,
         api_key_hash: Sha256::digest(config.api_key.as_bytes()).into(),
         hourly_quota: config.registrations_per_hour,
         daily_quota: config.registrations_per_day,
@@ -44,17 +50,23 @@ async fn main() -> Result<()> {
     let listener = tokio::net::TcpListener::bind(config.listen).await?;
     tracing::info!(address = %config.listen, provisioning_enabled = config.provisioning_enabled, "Backend listening");
     let server = axum::serve(listener, app).with_graceful_shutdown(shutdown_signal());
-    if config.provisioning_enabled {
-        let worker = Worker {
+    let registration_worker = if config.provisioning_enabled {
+        Some(Worker {
             store,
             chain: Arc::new(CosmosChain::connect(&config).await?),
-        };
-        tokio::select! {
-            result = server => result?,
-            result = worker.run(&config.database_url) => result?,
-        }
+        })
     } else {
-        server.await?;
+        None
+    };
+    tokio::select! {
+        result = server => result?,
+        result = async {
+            match &registration_worker {
+                Some(worker) => worker.run(&config.database_url).await,
+                None => std::future::pending().await,
+            }
+        } => result?,
+        result = mailbox_worker.run() => result?,
     }
     Ok(())
 }

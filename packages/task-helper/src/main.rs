@@ -466,8 +466,18 @@ async fn main() {
                 },
                 fuel_limit: None,
                 time_limit_seconds: None,
-                config: Default::default(),
+                config: [
+                    ("CHAIN".to_string(), ctx.chain_key().to_string()),
+                    (
+                        "SERVICE_HANDLER_CONTRACT_ADDRESS".to_string(),
+                        contract_service_handler.address.clone(),
+                    ),
+                ]
+                .into_iter()
+                .collect(),
                 env_keys: [
+                    "WAVS_ENV_BACKEND_API_URL",
+                    "WAVS_ENV_BACKEND_API_KEY",
                     "WAVS_ENV_IMAP_DEBUG_CAPABILITIES",
                     "WAVS_ENV_IMAP_PORT",
                     "WAVS_ENV_IMAP_HOST",

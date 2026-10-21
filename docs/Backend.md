@@ -245,8 +245,7 @@ can later mark it read. Each mailbox message belongs to one action. An action ca
 have multiple messages, such as duplicate deliveries that each need acknowledgment.
 Repeating the same metadata does not create another record or reset acknowledgment.
 
-The field is optional while forwarding these identifiers from WAVS is still
-pending in a follow-up PR.
+The reader supplies this field. Aggregator callbacks may omit it.
 
 - `201`: action and initial history entry created with status `received`.
 - `200`: same event and payload already exist; current record returned unchanged.
@@ -333,6 +332,7 @@ Each mailbox message has its own acknowledgment state:
 - `waiting`: the action has no final outcome yet.
 - `pending`: the action completed or failed, and the message needs acknowledgment.
 - `acknowledged`: the message has been acknowledged.
+- `obsolete`: UIDVALIDITY changed; its old identifiers cannot be used safely.
 
 Unresolved `outcome_unknown` actions remain waiting. Deciding when to close them
 is separate reconciliation work.
@@ -340,8 +340,20 @@ is separate reconciliation work.
 Acknowledgment failures can be retried without resubmitting the action. This state
 is internal to the backend and has no HTTP endpoints.
 
-The actual mailbox worker and switch to `BODY.PEEK[]` will follow in a separate
-PR. For now, the operator still marks emails read when fetching them.
+Backend startup requires the same
+`WAVS_ENV_MAIL_CREDENTIAL_KIND=plain-imap` and `WAVS_ENV_IMAP_*` settings as the
+operators. Operators fetch with `BODY.PEEK[]`, including through `read-mail`.
+
+The worker marks pending messages read by UID, checking the folder's UIDVALIDITY
+first. A changed UIDVALIDITY makes the old record `obsolete`, saves
+`mailbox_uid_validity_changed`, and stops retries without marking a reused UID
+read. Operators can register the email under its new identifiers. A removed
+message needs no further acknowledgment. Temporary failures retry with
+increasing delays, capped at one hour. Pending work survives backend restarts;
+repeating a flag update after a crash is safe.
+
+Keep the receiving account consistent between backend and operators. This setup
+supports one receiving account. Mailbox errors are stored as safe error codes.
 
 ## WAVS aggregator integration
 
@@ -350,7 +362,15 @@ Set `BACKEND_API_URL` to the backend's base URL as reached from the WAVS host
 The Docker startup task forwards them as `WAVS_ENV_BACKEND_API_URL` and
 `WAVS_ENV_BACKEND_API_KEY`.
 
-The backend's chain and service-handler settings must match the aggregator's
+The email reader registers each mailbox message through the action creation
+endpoint before returning its response to WAVS. It uses WAVS's event ID for the
+same event salt, so the aggregator finds the same action. Mailbox identifiers
+remain internal and do not enter the signed on-chain payload. API failures leave
+the message unread and uncached for another poll. After an operator restart,
+terminal or uncertain actions are cached again without requesting another
+submission. Metadata remains optional on the API for aggregator callbacks.
+
+The backend's chain and service-handler settings must match the components'
 `CHAIN` and `SERVICE_HANDLER_CONTRACT_ADDRESS`. The component rejects mismatched
 action records. For operators on another machine, configure a reachable backend
 URL and listener rather than the localhost default.
@@ -378,9 +398,9 @@ Callbacks recover the database action ID through idempotent creation, so no loca
 ID cache is required. If API reporting fails after submission, the component logs
 an error and returns a callback error without requesting another transaction.
 The saved action can remain unfinished until the planned reconciliation worker
-checks it. No timer-based retry, reconciliation, or email acknowledgment logic is
-implemented here. In particular, a pre-submission API failure does not undo the
-email reader's current read acknowledgment; email recovery belongs to that work.
+checks it. Callback retry and action reconciliation remain separate work. If the
+aggregator fails after the reader has cached a message, the email stays unread, but the
+operator cache prevents another attempt until its restart.
 
 ## Validation
 
@@ -402,19 +422,22 @@ deployed contracts, signing wallet, API credential, or running WAVS instance.
 They do not broadcast chain transactions.
 
 `registrations.rs` covers registration API, persistence, and worker behavior.
-`actions.rs` covers action API, persistence, and database constraints.
+`actions.rs` covers action API, persistence, database constraints, and acknowledgment
+worker recovery. Local fake IMAP tests check flag updates and UIDVALIDITY safety.
 Each Postgres test applies all migrations to a fresh test database.
 
-Aggregator reporting tests run without a database or chain:
+Component tests run without a database or chain:
 
 ```sh
-cargo test -p app-component-aggregator-submitter --lib
+cargo test -p app-component-aggregator-submitter -p app-component-operator-email-reader \
+  -p app-component-backend-client --lib
 cargo clippy -p app-component-aggregator-submitter --all-targets -- -D warnings
 cargo build -p app-component-aggregator-submitter --target wasm32-wasip2
 ```
 
-These tests exercise the reporting flow with a simulated backend, request encoding,
-and callback classification. They do not run the WAVS host or real chain submission.
+These tests exercise polling and restart behavior, reporting with a simulated
+backend, request encoding, and callback classification. They do not run the WAVS
+host or real chain submission.
 
 For unit tests alone, no database is needed. Plain `cargo test` skips the Postgres
 integration tests. Additional formatting/build checks can also run independently:
