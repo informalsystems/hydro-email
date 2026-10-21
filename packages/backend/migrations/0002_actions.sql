@@ -40,3 +40,29 @@ CREATE TABLE action_transitions (
 
 CREATE INDEX action_transitions_history
     ON action_transitions (action_id, id);
+
+CREATE TABLE action_mailbox_messages (
+    id BIGSERIAL PRIMARY KEY,
+    action_id BIGINT NOT NULL REFERENCES actions (id),
+    folder TEXT NOT NULL CHECK (char_length(folder) BETWEEN 1 AND 255),
+    uid_validity BIGINT NOT NULL CHECK (uid_validity BETWEEN 1 AND 4294967295),
+    uid BIGINT NOT NULL CHECK (uid BETWEEN 1 AND 4294967295),
+    acknowledgment_status TEXT NOT NULL DEFAULT 'waiting'
+        CHECK (acknowledgment_status IN ('waiting', 'pending', 'acknowledged')),
+    attempt_count BIGINT NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    last_attempt_at TIMESTAMPTZ,
+    next_attempt_at TIMESTAMPTZ,
+    last_error_code TEXT CHECK (last_error_code ~ '^[a-z0-9_]{1,64}$'),
+    acknowledged_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    UNIQUE (folder, uid_validity, uid),
+    CHECK ((acknowledgment_status = 'acknowledged') = (acknowledged_at IS NOT NULL)),
+    CHECK ((acknowledgment_status = 'pending') = (next_attempt_at IS NOT NULL))
+);
+
+CREATE INDEX action_mailbox_messages_action ON action_mailbox_messages (action_id, id);
+CREATE INDEX action_mailbox_messages_pending
+    ON action_mailbox_messages (next_attempt_at, id)
+    WHERE acknowledgment_status = 'pending';

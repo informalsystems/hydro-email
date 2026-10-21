@@ -15,6 +15,7 @@ use subtle::ConstantTimeEq;
 
 use crate::{
     action_store::{ActionOutcome, ActionResult, ActionStore, CreateAction, UpdateAction},
+    mailbox_store::MailboxMessageIdentity,
     registration_store::{Admission, RegistrationStore},
 };
 
@@ -76,6 +77,7 @@ struct RegisterRequest {
 struct CreateActionRequest {
     event_id: String,
     payload: CustomExecuteMsg,
+    mailbox_message: Option<MailboxMessageIdentity>,
 }
 
 fn is_hex_id(value: &str, length: usize) -> bool {
@@ -96,9 +98,16 @@ async fn create_action(
     if !is_hex_id(email.from.as_str(), 64) {
         return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_user_id"));
     }
+    if input
+        .mailbox_message
+        .as_ref()
+        .is_some_and(|message| !message.is_valid())
+    {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mailbox_message"));
+    }
     match state
         .actions
-        .create(&input.event_id, input.payload)
+        .create(&input.event_id, input.payload, input.mailbox_message)
         .await
         .map_err(internal)?
     {
