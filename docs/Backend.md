@@ -267,8 +267,10 @@ Optional `error_detail` provides a caller-sanitized explanation of 1–1,024 cha
 It is saved on the action and its transition history; omitting it in a later accepted
 result clears the current detail.
 
-Results require a `submitting` or `outcome_unknown` action. Unknown outcomes can
-resolve to completion or failure; `completed` and `failed` are terminal. Identical
+Results require a `submitting` or `outcome_unknown` action, except that a later
+success report can move `failed` to `completed`. Unknown outcomes can resolve to
+completion or failure. Completed actions cannot be overwritten by later failure
+or uncertainty reports, and conflicting transaction hashes remain rejected. Identical
 repeated results return `200` without modifying timestamps or adding history.
 Additional hash information for an unknown result is recorded with a history entry.
 Out-of-order reports, incompatible terminal results, and attempts to restart an

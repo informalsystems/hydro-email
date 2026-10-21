@@ -496,7 +496,7 @@ async fn submission_and_result_reports_are_atomic_and_idempotent(pool: PgPool) {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires isolated Postgres"]
-async fn unknown_results_can_resolve_but_failed_actions_cannot_restart(pool: PgPool) {
+async fn unknown_and_failed_results_can_resolve_to_completion_without_resubmitting(pool: PgPool) {
     let app = app(&pool, "dev:local", "handler");
     for (event, outcome) in [(1, "completed"), (2, "failed")] {
         let id = new_action(&app, event).await;
@@ -580,9 +580,78 @@ async fn unknown_results_can_resolve_but_failed_actions_cannot_restart(pool: PgP
         update_action(&app, id, "result", Some(&success))
             .await
             .status(),
+        StatusCode::OK
+    );
+    let completed = details(&app, id).await;
+    assert_eq!(completed["action"]["status"], "completed");
+    assert_eq!(completed["action"]["tx_hash"], "AB".repeat(32));
+    assert!(completed["action"]["error_code"].is_null());
+    assert!(completed["action"]["error_detail"].is_null());
+    assert_eq!(completed["history"][2], failure["history"][2]);
+    assert_eq!(completed["history"][3]["status"], "completed");
+    assert!(completed["history"][3]["error_code"].is_null());
+    assert!(completed["history"][3]["error_detail"].is_null());
+    assert_eq!(completed["history"].as_array().unwrap().len(), 4);
+    // Success remains idempotent, and later failure/uncertainty cannot undo it.
+    assert_eq!(
+        update_action(&app, id, "result", Some(&success))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    for late in [
+        failed,
+        json!({"status": "outcome_unknown", "error_code": "lost_response"}),
+    ] {
+        assert_eq!(
+            update_action(&app, id, "result", Some(&late))
+                .await
+                .status(),
+            StatusCode::CONFLICT
+        );
+    }
+    assert_eq!(
+        update_action(&app, id, "submission", None).await.status(),
         StatusCode::CONFLICT
     );
-    assert_eq!(details(&app, id).await["action"]["status"], "failed");
+    assert_eq!(details(&app, id).await, completed);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn late_success_preserves_transaction_hash_conflict_checks(pool: PgPool) {
+    let app = app(&pool, "dev:local", "handler");
+    let id = new_action(&app, 1).await;
+    assert_eq!(
+        update_action(&app, id, "submission", None).await.status(),
+        StatusCode::OK
+    );
+    let failed =
+        json!({"status": "failed", "error_code": "transaction_failed", "tx_hash": "ab".repeat(32)});
+    assert_eq!(
+        update_action(&app, id, "result", Some(&failed))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let before = details(&app, id).await;
+    let conflict = json!({"status": "completed", "tx_hash": "cd".repeat(32)});
+    assert_eq!(
+        update_action(&app, id, "result", Some(&conflict))
+            .await
+            .status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(details(&app, id).await, before);
+
+    let matching = json!({"status": "completed", "tx_hash": "ab".repeat(32)});
+    let response = update_action(&app, id, "result", Some(&matching)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let action = body(response).await;
+    assert_eq!(action["status"], "completed");
+    assert_eq!(action["tx_hash"], "AB".repeat(32));
+    assert!(action["error_code"].is_null());
+    assert_counts(&pool, 1, 4).await;
 }
 
 #[sqlx::test(migrations = "./migrations")]

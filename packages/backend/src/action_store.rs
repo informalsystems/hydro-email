@@ -193,6 +193,11 @@ impl ActionStore {
         }
         let allowed = match status {
             "submitting" => current.status == "received",
+            // Another aggregator may confirm success after a failure callback.
+            "completed" => matches!(
+                current.status.as_str(),
+                "submitting" | "outcome_unknown" | "failed"
+            ),
             _ => matches!(current.status.as_str(), "submitting" | "outcome_unknown"),
         };
         if !allowed {
