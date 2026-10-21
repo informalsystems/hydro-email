@@ -3,5 +3,6 @@ pub mod api;
 pub mod chain;
 pub mod config;
 pub mod mailbox_store;
+pub mod mailbox_worker;
 pub mod registration_store;
 pub mod worker;

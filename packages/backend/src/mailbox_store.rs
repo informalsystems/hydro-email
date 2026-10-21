@@ -43,6 +43,7 @@ pub struct MailboxMessage {
 #[derive(Debug)]
 pub enum AcknowledgmentResult {
     Acknowledged,
+    Obsolete,
     Retry {
         error_code: String,
         retry_after_seconds: u32,
@@ -162,32 +163,39 @@ impl ActionStore {
         let Some(current) = current else {
             return Ok(UpdateAcknowledgment::NotFound);
         };
-        if current.acknowledgment_status == "acknowledged"
-            && matches!(result, AcknowledgmentResult::Acknowledged)
-        {
+        if matches!(
+            (current.acknowledgment_status.as_str(), &result),
+            ("acknowledged", AcknowledgmentResult::Acknowledged)
+                | ("obsolete", AcknowledgmentResult::Obsolete)
+        ) {
             tx.commit().await?;
             return Ok(UpdateAcknowledgment::Updated(Box::new(current)));
         }
         if current.acknowledgment_status != "pending" {
             return Ok(UpdateAcknowledgment::Conflict);
         }
-        let (acknowledged, error_code, delay) = match result {
-            AcknowledgmentResult::Acknowledged => (true, None, 0),
+        let (status, error_code, delay) = match result {
+            AcknowledgmentResult::Acknowledged => ("acknowledged", None, 0),
+            AcknowledgmentResult::Obsolete => (
+                "obsolete",
+                Some("mailbox_uid_validity_changed".to_owned()),
+                0,
+            ),
             AcknowledgmentResult::Retry {
                 error_code,
                 retry_after_seconds,
-            } => (false, Some(error_code), retry_after_seconds),
+            } => ("pending", Some(error_code), retry_after_seconds),
         };
         let message = sqlx::query_as(
             "UPDATE action_mailbox_messages SET
-             acknowledgment_status=CASE WHEN $2 THEN 'acknowledged' ELSE 'pending' END,
-             acknowledged_at=CASE WHEN $2 THEN now() ELSE NULL END,
+             acknowledgment_status=$2,
+             acknowledged_at=CASE WHEN $2='acknowledged' THEN now() ELSE NULL END,
              attempt_count=attempt_count+1, last_attempt_at=now(), last_error_code=$3,
-             next_attempt_at=CASE WHEN $2 THEN NULL ELSE now()+$4::bigint * interval '1 second' END,
+             next_attempt_at=CASE WHEN $2='pending' THEN now()+$4::bigint * interval '1 second' ELSE NULL END,
              updated_at=now() WHERE id=$1 RETURNING *",
         )
         .bind(message_id)
-        .bind(acknowledged)
+        .bind(status)
         .bind(error_code)
         .bind(i64::from(delay))
         .fetch_one(&mut *tx)

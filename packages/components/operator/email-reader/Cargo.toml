@@ -11,6 +11,7 @@ rust-version = "1.90.0"
 crate-type = ["cdylib"]
 
 [dependencies]
+app-component-backend-client.workspace = true
 # Local
 app-contract-api = { workspace = true }
 

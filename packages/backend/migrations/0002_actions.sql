@@ -48,7 +48,7 @@ CREATE TABLE action_mailbox_messages (
     uid_validity BIGINT NOT NULL CHECK (uid_validity BETWEEN 1 AND 4294967295),
     uid BIGINT NOT NULL CHECK (uid BETWEEN 1 AND 4294967295),
     acknowledgment_status TEXT NOT NULL DEFAULT 'waiting'
-        CHECK (acknowledgment_status IN ('waiting', 'pending', 'acknowledged')),
+        CHECK (acknowledgment_status IN ('waiting', 'pending', 'acknowledged', 'obsolete')),
     attempt_count BIGINT NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     last_attempt_at TIMESTAMPTZ,
     next_attempt_at TIMESTAMPTZ,

@@ -1347,3 +1347,220 @@ async fn action_operations_validate_authentication_paths_queries_and_results(poo
     }
     assert_counts(&pool, 1, 2).await;
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn mailbox_worker_retries_after_restart_without_reexecuting_actions(pool: PgPool) {
+    use app_backend::mailbox_worker::{AcknowledgmentError, Mailbox, MailboxWorker};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    };
+
+    #[derive(Default)]
+    struct FakeMailbox {
+        fail: AtomicBool,
+        attempts: Mutex<Vec<i64>>,
+    }
+    #[async_trait::async_trait]
+    impl Mailbox for FakeMailbox {
+        async fn acknowledge(&self, message: &MailboxMessage) -> Result<(), AcknowledgmentError> {
+            self.attempts.lock().unwrap().push(message.id);
+            if self.fail.load(Ordering::SeqCst) {
+                Err(AcknowledgmentError::Unavailable)
+            } else {
+                Ok(())
+            }
+        }
+    }
+    let app = app(&pool, "dev:local", "handler");
+    let input = mailbox_request(10);
+    let id = body(post(&app, &input, Some(KEY)).await).await["id"]
+        .as_i64()
+        .unwrap();
+    let mailbox = Arc::new(FakeMailbox::default());
+    let worker = MailboxWorker {
+        store: mailbox_store(&pool, "dev:local", "handler"),
+        mailbox: mailbox.clone(),
+    };
+    worker.tick().await.unwrap();
+    assert!(mailbox.attempts.lock().unwrap().is_empty());
+
+    update_action(&app, id, "submission", None).await;
+    update_action(
+        &app,
+        id,
+        "result",
+        Some(&json!({"status":"outcome_unknown", "error_code":"confirmation_unavailable"})),
+    )
+    .await;
+    worker.tick().await.unwrap();
+    assert!(mailbox.attempts.lock().unwrap().is_empty());
+    update_action(
+        &app,
+        id,
+        "result",
+        Some(&json!({"status":"completed", "tx_hash":"ab".repeat(32)})),
+    )
+    .await;
+    // A second delivered copy attaches to the completed action and needs its own flag update.
+    assert_eq!(
+        post(&app, &mailbox_request(11), Some(KEY)).await.status(),
+        StatusCode::OK
+    );
+    let action_before = details(&app, id).await;
+    mailbox.fail.store(true, Ordering::SeqCst);
+    worker.tick().await.unwrap();
+    assert_eq!(mailbox.attempts.lock().unwrap().len(), 2);
+    for message in mailbox_messages(&pool, id).await.as_array().unwrap() {
+        assert_eq!(message["acknowledgment_status"], "pending");
+        assert_eq!(message["attempt_count"], 1);
+        assert_eq!(message["last_error_code"], "mailbox_unavailable");
+    }
+    // Backoff prevents polling from repeatedly contacting the mailbox.
+    worker.tick().await.unwrap();
+    assert_eq!(mailbox.attempts.lock().unwrap().len(), 2);
+    sqlx::query("UPDATE action_mailbox_messages SET next_attempt_at=now()-interval '1 second'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    mailbox.fail.store(false, Ordering::SeqCst);
+
+    // Simulate IMAP success followed by a database failure before saving acknowledgment.
+    sqlx::query("ALTER TABLE action_mailbox_messages ADD CONSTRAINT reject_ack CHECK (acknowledgment_status <> 'acknowledged') NOT VALID")
+        .execute(&pool).await.unwrap();
+    assert!(worker.tick().await.is_err());
+    assert_eq!(mailbox.attempts.lock().unwrap().len(), 3);
+    sqlx::query("ALTER TABLE action_mailbox_messages DROP CONSTRAINT reject_ack")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // A fresh worker picks up persisted pending records and repeats only flag updates.
+    let restarted = MailboxWorker {
+        store: mailbox_store(&pool, "dev:local", "handler"),
+        mailbox: mailbox.clone(),
+    };
+    restarted.tick().await.unwrap();
+    assert_eq!(mailbox.attempts.lock().unwrap().len(), 5);
+    for message in mailbox_messages(&pool, id).await.as_array().unwrap() {
+        assert_eq!(message["acknowledgment_status"], "acknowledged");
+        assert_eq!(message["attempt_count"], 2);
+        assert!(message["next_attempt_at"].is_null());
+        assert!(message["last_error_code"].is_null());
+    }
+    restarted.tick().await.unwrap();
+    assert_eq!(mailbox.attempts.lock().unwrap().len(), 5);
+    assert_eq!(details(&app, id).await, action_before);
+    assert_counts(&pool, 1, 4).await;
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn obsolete_mailbox_identifiers_stop_retrying_and_allow_new_generation(pool: PgPool) {
+    use app_backend::mailbox_worker::{AcknowledgmentError, Mailbox, MailboxWorker};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct ChangedMailbox {
+        attempts: Mutex<Vec<i64>>,
+    }
+    #[async_trait::async_trait]
+    impl Mailbox for ChangedMailbox {
+        async fn acknowledge(&self, message: &MailboxMessage) -> Result<(), AcknowledgmentError> {
+            self.attempts.lock().unwrap().push(message.uid_validity);
+            if message.uid_validity == 100 {
+                Err(AcknowledgmentError::UidValidityChanged)
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    let app = app(&pool, "dev:local", "handler");
+    let input = mailbox_request(10);
+    let id = body(post(&app, &input, Some(KEY)).await).await["id"]
+        .as_i64()
+        .unwrap();
+    update_action(&app, id, "submission", None).await;
+    update_action(
+        &app,
+        id,
+        "result",
+        Some(&json!({"status":"failed", "error_code":"transaction_failed"})),
+    )
+    .await;
+    let mailbox = Arc::new(ChangedMailbox::default());
+    let worker = MailboxWorker {
+        store: mailbox_store(&pool, "dev:local", "handler"),
+        mailbox: mailbox.clone(),
+    };
+    worker.tick().await.unwrap();
+    let obsolete = mailbox_messages(&pool, id).await[0].clone();
+    let message_id = obsolete["id"].as_i64().unwrap();
+    assert_eq!(obsolete["acknowledgment_status"], "obsolete");
+    assert_eq!(obsolete["last_error_code"], "mailbox_uid_validity_changed");
+    assert_eq!(obsolete["attempt_count"], 1);
+    assert!(obsolete["last_attempt_at"].is_string());
+    assert!(obsolete["next_attempt_at"].is_null());
+    assert!(obsolete["acknowledged_at"].is_null());
+
+    // A repeated report is idempotent; stale successes/retries cannot revive the record.
+    assert_eq!(
+        save_ack(
+            &worker.store,
+            id,
+            message_id,
+            AcknowledgmentResult::Obsolete
+        )
+        .await,
+        obsolete
+    );
+    for result in [AcknowledgmentResult::Acknowledged, acknowledgment_retry()] {
+        assert!(matches!(
+            worker
+                .store
+                .report_acknowledgment(id, message_id, result)
+                .await
+                .unwrap(),
+            UpdateAcknowledgment::Conflict
+        ));
+    }
+    assert_eq!(post(&app, &input, Some(KEY)).await.status(), StatusCode::OK);
+    update_action(
+        &app,
+        id,
+        "result",
+        Some(&json!({"status":"completed", "tx_hash":"ab".repeat(32)})),
+    )
+    .await;
+    assert_eq!(mailbox_messages(&pool, id).await[0], obsolete);
+
+    // A fresh worker still excludes the obsolete record from its pending queue.
+    let restarted = MailboxWorker {
+        store: mailbox_store(&pool, "dev:local", "handler"),
+        mailbox: mailbox.clone(),
+    };
+    assert!(restarted
+        .store
+        .pending_acknowledgments(50)
+        .await
+        .unwrap()
+        .is_empty());
+    restarted.tick().await.unwrap();
+    assert_eq!(*mailbox.attempts.lock().unwrap(), [100]);
+
+    // The operator rediscovers the same email with new mailbox identifiers.
+    let mut rediscovered = input;
+    rediscovered["mailbox_message"]["uid_validity"] = json!(101);
+    assert_eq!(
+        post(&app, &rediscovered, Some(KEY)).await.status(),
+        StatusCode::OK
+    );
+    restarted.tick().await.unwrap();
+    let messages = mailbox_messages(&pool, id).await;
+    assert_eq!(messages[0], obsolete);
+    assert_eq!(messages[1]["acknowledgment_status"], "acknowledged");
+    assert_eq!(*mailbox.attempts.lock().unwrap(), [100, 101]);
+    assert_counts(&pool, 1, 4).await;
+}

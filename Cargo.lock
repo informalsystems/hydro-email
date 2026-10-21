@@ -598,7 +598,9 @@ dependencies = [
  "cw-multi-test",
  "dotenvy",
  "email_address",
+ "imap",
  "layer-climb",
+ "native-tls",
  "proxy",
  "serde",
  "serde_json",
@@ -644,6 +646,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "app-client",
+ "app-component-backend-client",
  "app-contract-api",
  "bincode",
  "const-hex",
@@ -662,10 +665,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-component-backend-client"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "app-contract-api",
+ "futures",
+ "serde",
+ "serde_json",
+ "wstd 0.6.3",
+]
+
+[[package]]
 name = "app-component-operator-email-reader"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "app-component-backend-client",
  "app-contract-api",
  "base64 0.22.1",
  "cfdkim",
