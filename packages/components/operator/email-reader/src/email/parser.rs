@@ -15,6 +15,8 @@ pub enum InvalidEmail {
     SenderDomainInvalid,
     #[error("email_subject_missing")]
     SubjectMissing,
+    #[error("email_subject_invalid")]
+    SubjectInvalid,
     #[error("email_identity_missing")]
     IdentityMissing,
 }
@@ -102,6 +104,16 @@ impl EmailMessage {
             .filter(|(local, domain)| !local.is_empty() && !domain.is_empty())
             .ok_or(InvalidEmail::SenderDomainInvalid)?;
         Ok(domain.to_owned())
+    }
+
+    pub fn validate_subject(&self) -> Result<(), InvalidEmail> {
+        let subject = self
+            .subject
+            .as_deref()
+            .ok_or(InvalidEmail::SubjectMissing)?;
+        app_contract_api::proxy::ProxyExecuteMsg::from_email_subject(subject)
+            .map(|_| ())
+            .map_err(|_| InvalidEmail::SubjectInvalid)
     }
 
     pub fn event_id_salt(&self) -> Result<Vec<u8>, InvalidEmail> {
@@ -217,12 +229,23 @@ mod tests {
     }
 
     #[test]
-    fn empty_and_unknown_subjects_still_work_and_date_remains_an_identity_fallback() {
-        for subject in ["", "unknown instruction"] {
-            let raw = format!("From: Alice <alice@example.com>\r\nSubject: {subject}\r\nDate: Thu, 22 Oct 2026 12:00:00 +0000\r\n\r\nbody");
+    fn subject_validation_rejects_invalid_instructions_and_keeps_date_fallback() {
+        for (subject, valid) in [
+            ("deposit", true),
+            ("", false),
+            ("unknown instruction", false),
+        ] {
+            let raw = format!("From: alice@example.com\r\nSubject: {subject}\r\nDate: Thu, 22 Oct 2026 12:00:00 +0000\r\n\r\nbody");
             let email = EmailMessage::parse_rest_api(raw.as_bytes()).unwrap();
-            assert_eq!(email.sender_domain().unwrap(), "example.com");
             assert_eq!(email.event_id_salt().unwrap().len(), 32);
+            if valid {
+                email.validate_subject().unwrap();
+            } else {
+                assert_eq!(
+                    email.validate_subject().unwrap_err(),
+                    InvalidEmail::SubjectInvalid
+                );
+            }
         }
     }
 }

@@ -64,6 +64,7 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                 .map_err(|reason| *reason)
                 .and_then(|email| {
                     email.sender_domain()?;
+                    email.validate_subject()?;
                     Ok((email, email.event_id_salt()?))
                 });
             let (email, event_id_salt) = match prepared {
