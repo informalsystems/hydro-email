@@ -338,7 +338,7 @@ without creating an action, event ID, or action transition:
 
 ```json
 {
-  "mailbox_message": {"folder": "INBOX", "uid_validity": 100, "uid": 10},
+  "mailbox_message": { "folder": "INBOX", "uid_validity": 100, "uid": 10 },
   "error_code": "email_parse_failed"
 }
 ```
@@ -369,6 +369,7 @@ The email reader reports permanent failures through this endpoint:
 - `email_sender_missing`: no sender could be extracted.
 - `email_sender_domain_invalid`: the sender cannot be parsed as one mailbox with a domain.
 - `email_subject_missing`: no Subject header exists.
+- `email_subject_invalid`: the subject is empty, unsupported, or malformed.
 - `email_identity_missing`: neither Message-ID nor Date exists.
 
 Only a confirmed backend rejection is cached as handled. The acknowledgment
@@ -379,9 +380,29 @@ the rejection after an operator restart is safe.
 Connection, query, missing FETCH body, DNS, and other verification service failures
 end the poll without rejecting or caching the message. Normal polling tries again;
 there is no additional reader retry schedule. The `read-mail` diagnostic does not
-report rejections or cache messages. Empty and unsupported subjects retain their
-existing behavior until the subject-validation follow-up; DKIM result enforcement
-also remains separate work.
+report rejections or cache messages. DKIM result enforcement remains separate work.
+
+### Instruction subjects
+
+The reader and service-handler contract use the same parser:
+
+| Subject                                 | Operation               |
+| --------------------------------------- | ----------------------- |
+| `deposit` or `forward`                  | Forward funds to inflow |
+| `withdraw ADDRESS DENOM AMOUNT`         | Withdraw funds          |
+| `withdraw_receipt ADDRESS DENOM AMOUNT` | Withdraw receipt tokens |
+
+Command names are case-insensitive. Leading/trailing whitespace and whitespace
+between arguments are accepted. Empty subjects, unknown commands, and missing or
+extra arguments are rejected. Amounts must contain only ASCII digits, fit
+`Uint128`, and be greater than zero. Address and denom case are preserved; their
+validation is left to execution. Email addresses are not normalized by this change.
+
+Invalid subjects are rejected before action creation and use the usual mailbox
+acknowledgment flow. The contract also returns an error for invalid instructions;
+it never substitutes a deposit. Subjects in the signed payload and event salt
+remain unchanged. Deploying this behavior requires updating both the reader
+component and service-handler contract; there are no backend schema changes.
 
 ### Mailbox acknowledgment
 

@@ -87,11 +87,12 @@ fn handle_custom_message(
 ) -> Result<Response, ContractError> {
     match msg {
         CustomExecuteMsg::Email(email) => {
+            let operation = email.proxy_execute_msg()?;
             let pagination_id = state::push_email(deps.storage, &email)?;
 
             let proxy_msg = CosmosMsg::Wasm(WasmMsg::Execute {
                 contract_addr: state::proxy_address(deps.as_ref(), email.from.clone())?.to_string(),
-                msg: to_json_binary(&email.proxy_execute_msg())?,
+                msg: to_json_binary(&operation)?,
                 funds: vec![],
             });
 

@@ -111,7 +111,7 @@ pub struct UserIdEmail {
 }
 
 impl UserIdEmail {
-    pub fn proxy_execute_msg(&self) -> ProxyExecuteMsg {
+    pub fn proxy_execute_msg(&self) -> cosmwasm_std::StdResult<ProxyExecuteMsg> {
         ProxyExecuteMsg::from_email_subject(&self.subject)
     }
 }

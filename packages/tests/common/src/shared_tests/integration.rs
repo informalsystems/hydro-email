@@ -26,13 +26,13 @@ pub async fn test_integration(
 
     let email = UserIdEmail {
         from: UserId::new_email_address("alice@example.com"),
-        subject: "hello world!".to_string(),
+        subject: "deposit".to_string(),
     };
 
     // An email from a different user to verify we get the right proxy address
     let not_this_email = UserIdEmail {
         from: UserId::new_email_address("bob@example.com"),
-        subject: "hello world!".to_string(),
+        subject: "deposit".to_string(),
     };
 
     // no proxy address yet

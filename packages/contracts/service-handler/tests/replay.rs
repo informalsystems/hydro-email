@@ -271,10 +271,16 @@ fn proxy_failure_rolls_back_marker_and_email_history() {
 }
 
 #[test]
-fn invalid_validation_or_payload_does_not_consume_event() {
+fn invalid_validation_payload_or_subject_does_not_consume_event() {
     let mut suite = Suite::new();
     for (msg, expected) in [
         (message(1, 0, "deposit", 0), "Insufficient quorum"),
+        (message(1, 0, "", 1), "Invalid email instruction"),
+        (message(1, 0, "unsupported", 1), "Invalid email instruction"),
+        (
+            message(1, 0, "withdraw address denom", 1),
+            "Invalid email instruction",
+        ),
         (
             signed_payload(1, 0, b"invalid json".to_vec(), 1),
             "Payload decode",
