@@ -168,7 +168,7 @@ impl MailboxWorker {
                 .await?
             {
                 tracing::info!(
-                    action_id = saved.action_id,
+                    action_id = ?saved.action_id,
                     message_id = saved.id,
                     acknowledgment_status = %saved.acknowledgment_status,
                     error_code = ?saved.last_error_code,

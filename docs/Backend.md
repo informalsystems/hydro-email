@@ -194,15 +194,16 @@ Migration `0002_actions.sql` adds storage for WAVS actions:
   and 20-byte event ID stored as lowercase hex.
 - `action_transitions`: history of outcome changes for each action.
 - `action_mailbox_messages`: mailbox identifiers and acknowledgment state, separate
-  from execution. An action can have multiple messages, such as duplicate copies.
+  from execution, including permanent rejections without an action. An action
+  can have multiple messages, such as duplicate copies.
 
 Actions start as `received`, then become `submitting` while WAVS handles submission
 and confirmation. Outcomes are `completed`, `failed`, or `outcome_unknown`.
 Creating an action records its initial `received` transition atomically. Result
 reporting updates the action and history atomically. The WAVS aggregator reports
 actions and callback results through these endpoints. The reconciliation worker
-checks unfinished records against the chain. Email validation failures before an
-action exists remain separate work.
+checks unfinished records against the chain. The backend can record permanent
+email rejections without an action; reader integration remains separate work.
 
 ### Create an action
 
@@ -242,8 +243,9 @@ and `payload`:
 ```
 
 These fields identify an email in the configured receiving account so the backend
-can later mark it read. Each mailbox message belongs to one action. An action can
-have multiple messages, such as duplicate deliveries that each need acknowledgment.
+can later mark it read. Each accepted mailbox message belongs to one action. An
+action can have multiple messages, such as duplicate deliveries that each need
+acknowledgment.
 Repeating the same metadata does not create another record or reset acknowledgment.
 
 The reader supplies this field. Aggregator callbacks may omit it.
@@ -253,7 +255,7 @@ The reader supplies this field. Aggregator callbacks may omit it.
 - `400`: invalid event, user ID, or mailbox identifiers.
 - `401`: missing or invalid API credential.
 - `409`: event exists with different sender or payload, or the mailbox message
-  already belongs to another action.
+  already belongs to another action or a permanent rejection.
 - `413`: request exceeds 4 KiB.
 - `422`: malformed request shape, unsupported payload, or unknown top-level field.
 - `503`: database unavailable.
@@ -328,12 +330,49 @@ Malformed IDs, pagination, hashes, or result combinations return `400`; unsuppor
 result statuses or unknown result-body fields return `422`. No new registration
 queries or action retry operations are added.
 
+### Permanent email rejections
+
+`POST /v1/mailbox-rejections` is an internal endpoint using the same bearer API key.
+It records a terminal rejection and queues mailbox acknowledgment atomically,
+without creating an action, event ID, or action transition:
+
+```json
+{
+  "mailbox_message": {"folder": "INBOX", "uid_validity": 100, "uid": 10},
+  "error_code": "email_parse_failed"
+}
+```
+
+The backend supplies the configured chain and service-handler scope. The request
+accepts no sender, subject, email contents, or raw error details. Error codes must
+contain 1–64 lowercase ASCII letters, digits, or underscores. Callers must classify
+permanent failures before using this endpoint. Temporary outages must not be rejected.
+
+- `201`: rejection saved; returns the internal mailbox record with `action_id: null`,
+  a `rejection_code`, and acknowledgment status `pending`.
+- `200`: the same identity, deployment, and rejection code already exist; returns
+  the existing record without resetting its code, timestamps, or acknowledgment state.
+- `400`: invalid mailbox identity or rejection code.
+- `401`: missing or invalid API key.
+- `409`: identity belongs to an action, another deployment, or a different rejection code.
+- `422`: invalid JSON shape or unknown fields.
+- `503`: database operation failed; retry before caching the email as handled.
+
+For the configured receiving account, each mailbox identity can belong to either
+an action or a rejection, and cannot switch between them. Rejections store their
+chain and service handler directly; other messages get these through their action.
+The rejection reason is kept even if marking the email read fails or succeeds.
+
+Operators do not use this endpoint yet. Reporting permanent failures, retrying
+temporary failures, and validating subjects will be added in follow-up work.
+
 ### Mailbox acknowledgment
 
 Each mailbox message has its own acknowledgment state:
 
 - `waiting`: the action has no final outcome yet.
-- `pending`: the action completed, failed, or closed as unknown; acknowledgment is due.
+- `pending`: the action completed, failed, or closed as unknown, or the email was
+  permanently rejected; acknowledgment is due.
 - `acknowledged`: the message has been acknowledged.
 - `obsolete`: UIDVALIDITY changed; its old identifiers cannot be used safely.
 

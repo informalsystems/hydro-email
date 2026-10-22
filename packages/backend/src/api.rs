@@ -15,7 +15,7 @@ use subtle::ConstantTimeEq;
 
 use crate::{
     action_store::{ActionOutcome, ActionResult, ActionStore, CreateAction, UpdateAction},
-    mailbox_store::MailboxMessageIdentity,
+    mailbox_store::{valid_error_code, CreateRejection, MailboxMessageIdentity},
     registration_store::{Admission, RegistrationStore},
 };
 
@@ -33,6 +33,7 @@ pub fn router(state: ApiState) -> Router {
     let protected = Router::new()
         .route("/v1/registrations", post(register))
         .route("/v1/registrations/{user_id}", get(status))
+        .route("/v1/mailbox-rejections", post(reject_mailbox_message))
         .route("/v1/actions", post(create_action).get(list_actions))
         .route("/v1/actions/{id}", get(action_details))
         .route("/v1/actions/{id}/submission", post(action_submission))
@@ -78,6 +79,39 @@ struct CreateActionRequest {
     event_id: String,
     payload: CustomExecuteMsg,
     mailbox_message: Option<MailboxMessageIdentity>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RejectMailboxMessageRequest {
+    mailbox_message: MailboxMessageIdentity,
+    error_code: String,
+}
+
+async fn reject_mailbox_message(
+    State(state): State<Arc<ApiState>>,
+    Json(input): Json<RejectMailboxMessageRequest>,
+) -> Result<Response, ApiError> {
+    if !input.mailbox_message.is_valid() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_mailbox_message"));
+    }
+    if !valid_error_code(&input.error_code) {
+        return Err(ApiError(StatusCode::BAD_REQUEST, "invalid_rejection_code"));
+    }
+    match state
+        .actions
+        .reject_mailbox_message(&input.mailbox_message, &input.error_code)
+        .await
+        .map_err(internal)?
+    {
+        CreateRejection::Created(message) => {
+            Ok((StatusCode::CREATED, Json(message)).into_response())
+        }
+        CreateRejection::Existing(message) => Ok(Json(message).into_response()),
+        CreateRejection::Conflict => {
+            Err(ApiError(StatusCode::CONFLICT, "mailbox_rejection_conflict"))
+        }
+    }
 }
 
 fn is_hex_id(value: &str, length: usize) -> bool {

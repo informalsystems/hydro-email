@@ -45,7 +45,10 @@ CREATE INDEX action_transitions_history
 
 CREATE TABLE action_mailbox_messages (
     id BIGSERIAL PRIMARY KEY,
-    action_id BIGINT NOT NULL REFERENCES actions (id),
+    action_id BIGINT REFERENCES actions (id),
+    rejection_chain_key TEXT,
+    rejection_service_handler_address TEXT,
+    rejection_code TEXT CHECK (rejection_code ~ '^[a-z0-9_]{1,64}$'),
     folder TEXT NOT NULL CHECK (char_length(folder) BETWEEN 1 AND 255),
     uid_validity BIGINT NOT NULL CHECK (uid_validity BETWEEN 1 AND 4294967295),
     uid BIGINT NOT NULL CHECK (uid BETWEEN 1 AND 4294967295),
@@ -59,6 +62,15 @@ CREATE TABLE action_mailbox_messages (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
+    -- Action-linked messages derive scope through the action. Rejections have no action.
+    CHECK (
+        (action_id IS NOT NULL AND rejection_chain_key IS NULL
+         AND rejection_service_handler_address IS NULL AND rejection_code IS NULL)
+        OR
+        (action_id IS NULL AND rejection_chain_key IS NOT NULL
+         AND rejection_service_handler_address IS NOT NULL AND rejection_code IS NOT NULL
+         AND acknowledgment_status <> 'waiting')
+    ),
     UNIQUE (folder, uid_validity, uid),
     CHECK ((acknowledgment_status = 'acknowledged') = (acknowledged_at IS NOT NULL)),
     CHECK ((acknowledgment_status = 'pending') = (next_attempt_at IS NOT NULL))

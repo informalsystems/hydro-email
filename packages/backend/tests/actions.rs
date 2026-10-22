@@ -747,7 +747,7 @@ async fn mailbox_identity_is_global_and_queries_remain_deployment_scoped(pool: P
         let other_store = mailbox_store(&pool, chain, handler);
         let pending = other_store.pending_acknowledgments(50).await.unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].action_id, other_id);
+        assert_eq!(pending[0].action_id, Some(other_id));
         assert!(matches!(
             other_store
                 .report_acknowledgment(id, message_id, AcknowledgmentResult::Acknowledged)
@@ -761,7 +761,7 @@ async fn mailbox_identity_is_global_and_queries_remain_deployment_scoped(pool: P
         .await
         .unwrap();
     assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].action_id, id);
+    assert_eq!(pending[0].action_id, Some(id));
     assert_eq!(mailbox_messages(&pool, id).await, before);
     assert_counts(&pool, 3, 9).await;
 }
@@ -1563,4 +1563,189 @@ async fn obsolete_mailbox_identifiers_stop_retrying_and_allow_new_generation(poo
     assert_eq!(messages[1]["acknowledgment_status"], "acknowledged");
     assert_eq!(*mailbox.attempts.lock().unwrap(), [100, 101]);
     assert_counts(&pool, 1, 4).await;
+}
+
+fn rejection_request(uid: u32) -> Value {
+    json!({
+        "mailbox_message": {"folder": "INBOX", "uid_validity": 100, "uid": uid},
+        "error_code": "email_parse_failed"
+    })
+}
+
+async fn reject(app: &Router, input: &Value) -> Response {
+    request(
+        app,
+        "POST",
+        "/v1/mailbox-rejections",
+        Some(input),
+        Some(KEY),
+    )
+    .await
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn permanent_rejections_are_idempotent_and_exclusive(pool: PgPool) {
+    let app = app(&pool, "dev:local", "handler");
+    let input = rejection_request(10);
+    let response = reject(&app, &input).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let original = body(response).await;
+    assert!(original["action_id"].is_null());
+    assert_eq!(original["rejection_code"], "email_parse_failed");
+    assert_eq!(original["acknowledgment_status"], "pending");
+    assert!(original["next_attempt_at"].is_string());
+    let duplicate = reject(&app, &input).await;
+    assert_eq!(duplicate.status(), StatusCode::OK);
+    assert_eq!(body(duplicate).await, original);
+
+    let mut conflicting = input.clone();
+    conflicting["error_code"] = json!("invalid_subject");
+    assert_eq!(
+        reject(&app, &conflicting).await.status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        post(&app, &mailbox_request(10), Some(KEY)).await.status(),
+        StatusCode::CONFLICT
+    );
+    assert_eq!(body(reject(&app, &input).await).await, original);
+    assert_counts(&pool, 0, 0).await;
+
+    assert_eq!(
+        post(&app, &mailbox_request(11), Some(KEY)).await.status(),
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        reject(&app, &rejection_request(11)).await.status(),
+        StatusCode::CONFLICT
+    );
+    assert_counts(&pool, 1, 1).await;
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn rejection_api_and_schema_require_valid_rejection_metadata(pool: PgPool) {
+    let app = app(&pool, "dev:local", "handler");
+    let input = rejection_request(10);
+    assert_eq!(
+        request(&app, "POST", "/v1/mailbox-rejections", Some(&input), None)
+            .await
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    for code in ["", "Parse Failed", &"a".repeat(65)] {
+        let mut invalid = input.clone();
+        invalid["error_code"] = json!(code);
+        assert_eq!(
+            reject(&app, &invalid).await.status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+    let mut invalid = input.clone();
+    invalid["mailbox_message"]["uid"] = json!(0);
+    assert_eq!(
+        reject(&app, &invalid).await.status(),
+        StatusCode::BAD_REQUEST
+    );
+    let mut invalid = input.clone();
+    invalid["chain_key"] = json!("caller-supplied-scope");
+    assert_eq!(
+        reject(&app, &invalid).await.status(),
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+
+    assert_eq!(reject(&app, &input).await.status(), StatusCode::CREATED);
+    for statement in [
+        "UPDATE action_mailbox_messages SET rejection_code=NULL",
+        "UPDATE action_mailbox_messages SET rejection_code='INVALID'",
+        "UPDATE action_mailbox_messages SET rejection_chain_key=NULL",
+        "UPDATE action_mailbox_messages SET rejection_service_handler_address=NULL",
+        "UPDATE action_mailbox_messages SET acknowledgment_status='waiting', next_attempt_at=NULL",
+    ] {
+        assert_database_error(
+            sqlx::query(statement).execute(&pool).await,
+            ErrorKind::CheckViolation,
+        );
+    }
+    let action = body(post(&app, &action_request(), Some(KEY)).await).await;
+    assert_database_error(
+        sqlx::query("UPDATE action_mailbox_messages SET action_id=$1")
+            .bind(action["id"].as_i64().unwrap())
+            .execute(&pool)
+            .await,
+        ErrorKind::CheckViolation,
+    );
+    assert_database_error(sqlx::query("INSERT INTO action_mailbox_messages (folder, uid_validity, uid) VALUES ('INBOX',100,12)").execute(&pool).await, ErrorKind::CheckViolation);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn rejection_ownership_and_acknowledgments_are_deployment_scoped(pool: PgPool) {
+    let original_app = app(&pool, "dev:local", "handler");
+    let original = body(reject(&original_app, &rejection_request(10)).await).await;
+    let id = original["id"].as_i64().unwrap();
+    for (chain, handler) in [("dev:other", "handler"), ("dev:local", "other-handler")] {
+        let other_app = app(&pool, chain, handler);
+        assert_eq!(
+            reject(&other_app, &rejection_request(10)).await.status(),
+            StatusCode::CONFLICT
+        );
+        let store = mailbox_store(&pool, chain, handler);
+        assert!(store.pending_acknowledgments(25).await.unwrap().is_empty());
+        assert!(matches!(
+            store
+                .report_acknowledgment(None, id, AcknowledgmentResult::Acknowledged)
+                .await
+                .unwrap(),
+            UpdateAcknowledgment::NotFound
+        ));
+    }
+    assert_eq!(
+        body(reject(&original_app, &rejection_request(10)).await).await,
+        original
+    );
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn fresh_worker_acknowledges_persisted_rejection_without_an_action(pool: PgPool) {
+    use app_backend::mailbox_worker::{AcknowledgmentError, Mailbox, MailboxWorker};
+    use std::sync::Arc;
+
+    struct FakeMailbox;
+    #[async_trait::async_trait]
+    impl Mailbox for FakeMailbox {
+        async fn acknowledge(&self, message: &MailboxMessage) -> Result<(), AcknowledgmentError> {
+            assert!(message.action_id.is_none());
+            assert_eq!(
+                message.rejection_code.as_deref(),
+                Some("email_parse_failed")
+            );
+            Ok(())
+        }
+    }
+    let app = app(&pool, "dev:local", "handler");
+    assert_eq!(
+        reject(&app, &rejection_request(10)).await.status(),
+        StatusCode::CREATED
+    );
+    let worker = MailboxWorker {
+        store: mailbox_store(&pool, "dev:local", "handler"),
+        mailbox: Arc::new(FakeMailbox),
+    };
+    worker.tick().await.unwrap();
+    let response = reject(&app, &rejection_request(10)).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let saved = body(response).await;
+    assert_eq!(saved["acknowledgment_status"], "acknowledged");
+    assert_eq!(saved["rejection_code"], "email_parse_failed");
+    assert_eq!(saved["attempt_count"], 1);
+    assert!(worker
+        .store
+        .pending_acknowledgments(25)
+        .await
+        .unwrap()
+        .is_empty());
+    assert_counts(&pool, 0, 0).await;
 }
