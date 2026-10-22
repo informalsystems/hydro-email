@@ -41,7 +41,8 @@ The backend runs the acknowledgment worker. Give it the same
 these settings are required at backend startup.
 The backend marks each message read after its action completes or fails. Mailbox
 failures are retried after a delay, including after a backend restart.
-Unresolved `outcome_unknown` actions remain unread.
+Unresolved `outcome_unknown` actions remain unread until reconciliation resolves
+or closes them. Closed unknown outcomes become eligible to be marked read.
 
 Operators register mailbox identifiers with the backend before returning a signed
 action. These identifiers stay out of the signed payload and action responses.

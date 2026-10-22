@@ -12,6 +12,8 @@ pub struct Config {
     pub registrations_per_hour: i64,
     pub registrations_per_day: i64,
     pub provisioning_enabled: bool,
+    pub reconciliation_interval_seconds: u32,
+    pub reconciliation_grace_seconds: u32,
     pub proxy_code_id: u64,
     pub service_handler_address: String,
     pub control_centers: Vec<String>,
@@ -30,6 +32,10 @@ impl Config {
             registrations_per_hour: value("BACKEND_REGISTRATIONS_PER_HOUR", "10").parse()?,
             registrations_per_day: value("BACKEND_REGISTRATIONS_PER_DAY", "50").parse()?,
             provisioning_enabled,
+            reconciliation_interval_seconds: value("BACKEND_RECONCILIATION_INTERVAL_SECONDS", "30")
+                .parse()?,
+            reconciliation_grace_seconds: value("BACKEND_RECONCILIATION_GRACE_SECONDS", "900")
+                .parse()?,
             proxy_code_id: value("BACKEND_PROXY_CODE_ID", "0").parse()?,
             service_handler_address: required("BACKEND_SERVICE_HANDLER_ADDRESS")?,
             control_centers: value("BACKEND_CONTROL_CENTER_ADDRESSES", "")
@@ -45,6 +51,10 @@ impl Config {
         ensure!(
             config.registrations_per_hour > 0 && config.registrations_per_day > 0,
             "Registration quotas must be positive"
+        );
+        ensure!(
+            config.reconciliation_interval_seconds > 0 && config.reconciliation_grace_seconds > 0,
+            "Reconciliation interval and grace period must be positive"
         );
         if provisioning_enabled {
             ensure!(

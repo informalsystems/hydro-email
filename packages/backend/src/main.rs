@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use app_backend::{
+    action_chain::CosmosActionChain,
     action_store::ActionStore,
     api::{self, ApiState},
     chain::CosmosChain,
     config::Config,
     mailbox_worker::{ImapMailbox, MailboxWorker},
+    reconciliation::ReconciliationWorker,
     registration_store::RegistrationStore,
     worker::Worker,
 };
@@ -40,6 +42,12 @@ async fn main() -> Result<()> {
         store: actions.clone(),
         mailbox: Arc::new(ImapMailbox::from_env()?),
     };
+    let reconciliation_worker = ReconciliationWorker {
+        store: actions.clone(),
+        chain: Arc::new(CosmosActionChain::from_config(&config).await?),
+        interval_seconds: config.reconciliation_interval_seconds,
+        grace_seconds: config.reconciliation_grace_seconds,
+    };
     let app = api::router(ApiState {
         store: store.clone(),
         actions,
@@ -67,6 +75,7 @@ async fn main() -> Result<()> {
             }
         } => result?,
         result = mailbox_worker.run() => result?,
+        result = reconciliation_worker.run() => result?,
     }
     Ok(())
 }
