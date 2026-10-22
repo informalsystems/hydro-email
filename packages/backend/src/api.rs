@@ -262,8 +262,8 @@ async fn list_actions(
     Ok(Json(page).into_response())
 }
 
-// Preserve mailbox case: changing identity normalization here would stop matching
-// IDs produced by the existing email reader. Do not accept display names or lists.
+// Validate registration input without accepting display names or lists.
+// Identity normalization is shared with the operator in UserId::new_email_address.
 pub fn validate_email(input: &str) -> Option<String> {
     let email = input.trim();
     let options = email_address::Options::default()
@@ -349,12 +349,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn email_identity_matches_operator_without_case_folding() {
+    fn email_identity_matches_operator_after_domain_normalization() {
         let email = validate_email("  Alice@example.com  ").unwrap();
         assert_eq!(email, "Alice@example.com");
         assert_eq!(
             UserId::new_email_address(&email),
-            UserId::new_email_address("Alice@example.com")
+            UserId::new_email_address("Alice <Alice@EXAMPLE.COM>")
         );
         assert_ne!(
             UserId::new_email_address(&email),

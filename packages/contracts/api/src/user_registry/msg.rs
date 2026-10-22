@@ -45,6 +45,8 @@ impl UserId {
         Self(user_id)
     }
 
+    /// Derive an ID from the extracted mailbox, lowercasing only the domain.
+    /// Local-part case is preserved so distinct mailboxes cannot share an identity.
     pub fn new_email_address(email: &str) -> Self {
         let email = match extract_email(email) {
             Some(e) => e,
@@ -52,7 +54,14 @@ impl UserId {
         };
 
         let mut hasher = Sha256::new();
-        hasher.update(&email);
+        match email.rsplit_once('@') {
+            Some((local, domain)) => {
+                hasher.update(local);
+                hasher.update("@");
+                hasher.update(domain.to_ascii_lowercase());
+            }
+            None => hasher.update(&email),
+        }
         hasher.update(Self::SALT);
 
         Self(const_hex::encode(hasher.finalize()))
@@ -74,5 +83,28 @@ fn extract_email(input: &str) -> Option<String> {
             // Rare, but groups exist in RFC 5322
             group.addrs.first().map(|a| a.addr.clone())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn email_id_normalizes_domain_case_and_preserves_local_part_case() {
+        let expected = UserId::new_email_address("Alice@example.com");
+        for email in [
+            "Alice@EXAMPLE.COM",
+            "Alice@ExAmPlE.CoM",
+            "Alice <Alice@EXAMPLE.COM>",
+        ] {
+            assert_eq!(UserId::new_email_address(email), expected);
+        }
+        assert_ne!(UserId::new_email_address("alice@example.com"), expected);
+        assert_ne!(UserId::new_email_address("ALICE@example.com"), expected);
+        assert_eq!(
+            UserId::new_email_address("alice@example.com").as_str(),
+            "7287a82555fca2e66e49eca0607a4007881f661e3588b408a71f5870773ed57c"
+        );
     }
 }

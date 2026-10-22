@@ -81,8 +81,12 @@ registration quotas; per-IP throttling is not implemented.
 ```
 
 Only a single plain ASCII mailbox is accepted, without a display name. Surrounding
-whitespace is trimmed. Case is preserved to match the existing operator's email ID
-derivation; case variants are not collapsed. There is no email verification.
+whitespace is trimmed. The shared email-ID helper extracts the mailbox and
+lowercases only its domain before hashing. Registration, incoming emails, and CLI
+registration therefore use the same ID for domain capitalization variants, such
+as `Alice@EXAMPLE.COM` and `Alice@example.com`. Local-part case is preserved:
+`Alice@example.com` and `alice@example.com` are separate identities. The stored
+registration email may retain the submitted spelling. There is no email verification.
 The caller cannot choose a proxy, admin, control center, or chain.
 
 - `202`: new registration or explicitly requested retry queued.
@@ -396,7 +400,7 @@ Command names are case-insensitive. Leading/trailing whitespace and whitespace
 between arguments are accepted. Empty subjects, unknown commands, and missing or
 extra arguments are rejected. Amounts must contain only ASCII digits, fit
 `Uint128`, and be greater than zero. Address and denom case are preserved; their
-validation is left to execution. Email addresses are not normalized by this change.
+validation is left to execution.
 
 Invalid subjects are rejected before action creation and use the usual mailbox
 acknowledgment flow. The contract also returns an error for invalid instructions;
