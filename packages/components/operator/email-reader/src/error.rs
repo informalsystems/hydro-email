@@ -6,6 +6,9 @@ pub type AppResult<T> = std::result::Result<T, AppError>;
 
 #[derive(Debug, Error)]
 pub enum AppError {
+    #[error("{0}")]
+    InvalidEmail(#[from] crate::email::parser::InvalidEmail),
+
     #[error("{0:?}")]
     ImapConnection(#[from] ImapConnectionError),
 

@@ -51,23 +51,6 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                 }
             };
 
-            let email = &fetched.message;
-            verify_email(email).await?;
-
-            let event_id_salt = email.event_id_salt()?;
-
-            let user_id = UserId::new_email_address(&email.original_sender);
-
-            let email = UserIdEmail {
-                from: user_id,
-                subject: email.subject.clone().unwrap_or_default(),
-            };
-
-            println!("Got email: {:#?}", email);
-            println!("Proxy execute msg: {:#?}", email.proxy_execute_msg());
-            println!("Event ID salt: {}", const_hex::encode(&event_id_salt));
-
-            let payload = CustomExecuteMsg::Email(email);
             let chain = host::config_var("CHAIN")
                 .ok_or_else(|| anyhow::anyhow!("CHAIN config var is required"))?;
             let handler =
@@ -75,6 +58,34 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                     anyhow::anyhow!("SERVICE_HANDLER_CONTRACT_ADDRESS config var is required")
                 })?;
             let backend = app_component_backend_client::BackendClient::from_env()?;
+            let prepared = fetched
+                .message
+                .as_ref()
+                .map_err(|reason| *reason)
+                .and_then(|email| {
+                    email.sender_domain()?;
+                    Ok((email, email.event_id_salt()?))
+                });
+            let (email, event_id_salt) = match prepared {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    backend::reject(
+                        &backend,
+                        &chain,
+                        &handler,
+                        fetched.id,
+                        reason,
+                        &fetched.cache,
+                    )
+                    .await?;
+                    return Ok(Vec::new());
+                }
+            };
+            verify_email(email).await?;
+            let payload = CustomExecuteMsg::Email(UserIdEmail {
+                from: UserId::new_email_address(&email.original_sender),
+                subject: email.subject.clone().unwrap_or_default(),
+            });
             let submit = backend::register(
                 &backend,
                 &chain,
@@ -108,7 +119,7 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                         }
                     };
 
-                    let email = email.message;
+                    let email = email.message?;
                     println!("{:#?}", email);
 
                     let verification_result = verify_email(&email).await;

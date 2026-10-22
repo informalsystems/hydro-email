@@ -1,10 +1,29 @@
-use anyhow::{Context, Result};
-use imap::{types::Fetch, Session};
+use imap::types::Fetch;
 use mailparse::*;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 
 use crate::error::AppResult;
+
+#[derive(Debug, Clone, Copy, thiserror::Error, PartialEq, Eq)]
+pub enum InvalidEmail {
+    #[error("email_parse_failed")]
+    ParseFailed,
+    #[error("email_sender_missing")]
+    SenderMissing,
+    #[error("email_sender_domain_invalid")]
+    SenderDomainInvalid,
+    #[error("email_subject_missing")]
+    SubjectMissing,
+    #[error("email_identity_missing")]
+    IdentityMissing,
+}
+
+impl InvalidEmail {
+    pub fn code(self) -> String {
+        self.to_string()
+    }
+}
 
 pub struct EmailMessage {
     // 1) "Original sender" best-effort (From / Resent-From / Sender / envelope)
@@ -32,7 +51,7 @@ impl std::fmt::Debug for EmailMessage {
                 &self
                     .body_text
                     .as_ref()
-                    .map(|s| Cow::Owned(format!("{}...", &s[..s.len().min(30)])))
+                    .map(|s| Cow::Owned(format!("{}...", s.chars().take(30).collect::<String>())))
                     .unwrap_or(Cow::Borrowed("None")),
             )
             .field("raw_bytes_len", &self.raw_bytes.len())
@@ -42,12 +61,11 @@ impl std::fmt::Debug for EmailMessage {
 }
 
 impl EmailMessage {
-    pub fn parse_imap(f: &Fetch) -> anyhow::Result<Self> {
-        let body_bytes = f.body().context("Missing email body")?;
+    pub fn parse_imap(f: &Fetch, body_bytes: &[u8]) -> Result<Self, InvalidEmail> {
         parse_any(body_bytes, Some(f))
     }
 
-    pub fn parse_rest_api(body_bytes: &[u8]) -> anyhow::Result<Self> {
+    pub fn parse_rest_api(body_bytes: &[u8]) -> Result<Self, InvalidEmail> {
         parse_any(body_bytes, None)
     }
 
@@ -72,16 +90,27 @@ impl EmailMessage {
             .map(|(_, v)| v.as_str())
     }
 
-    pub fn event_id_salt(&self) -> anyhow::Result<Vec<u8>> {
+    pub fn sender_domain(&self) -> Result<String, InvalidEmail> {
+        let addresses =
+            addrparse(&self.original_sender).map_err(|_| InvalidEmail::SenderDomainInvalid)?;
+        let [MailAddr::Single(sender)] = addresses.as_slice() else {
+            return Err(InvalidEmail::SenderDomainInvalid);
+        };
+        let (_, domain) = sender
+            .addr
+            .split_once('@')
+            .filter(|(local, domain)| !local.is_empty() && !domain.is_empty())
+            .ok_or(InvalidEmail::SenderDomainInvalid)?;
+        Ok(domain.to_owned())
+    }
+
+    pub fn event_id_salt(&self) -> Result<Vec<u8>, InvalidEmail> {
         let unique_id = self
             .message_id()
             .or_else(|| self.date())
-            .ok_or_else(|| anyhow::anyhow!("Email must have either Message-ID or Date header"))?;
+            .ok_or(InvalidEmail::IdentityMissing)?;
 
-        let subject = self
-            .subject
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Email must have a Subject header"))?;
+        let subject = self.subject.as_ref().ok_or(InvalidEmail::SubjectMissing)?;
 
         let mut hasher = Sha256::new();
 
@@ -93,9 +122,8 @@ impl EmailMessage {
     }
 }
 
-fn parse_any(body_bytes: &[u8], f: Option<&Fetch>) -> anyhow::Result<EmailMessage> {
-    let msg = parse_mail(body_bytes)
-        .map_err(|e| anyhow::anyhow!("Failed to parse email message: {:?}", e))?;
+fn parse_any(body_bytes: &[u8], f: Option<&Fetch>) -> Result<EmailMessage, InvalidEmail> {
+    let msg = parse_mail(body_bytes).map_err(|_| InvalidEmail::ParseFailed)?;
 
     let subject = msg
         .headers
@@ -128,7 +156,8 @@ fn parse_any(body_bytes: &[u8], f: Option<&Fetch>) -> anyhow::Result<EmailMessag
                     .flatten()
             })
         })
-        .ok_or_else(|| anyhow::anyhow!("Failed to extract original sender"))?;
+        .filter(|sender| !sender.trim().is_empty())
+        .ok_or(InvalidEmail::SenderMissing)?;
 
     // there can be multiple signatures
     let dkim_signatures = msg
@@ -156,4 +185,44 @@ fn parse_any(body_bytes: &[u8], f: Option<&Fetch>) -> anyhow::Result<EmailMessag
         raw_bytes: body_bytes.to_vec(),
         headers,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_content_and_missing_identity_have_stable_rejection_codes() {
+        for (raw, expected) in [
+            (" broken header", InvalidEmail::ParseFailed),
+            ("Subject: deposit\r\n\r\nbody", InvalidEmail::SenderMissing),
+            (
+                "From: alice@example.com\r\nSubject: deposit\r\n\r\n",
+                InvalidEmail::IdentityMissing,
+            ),
+            (
+                "From: alice@example.com\r\nMessage-ID: <1>\r\n\r\n",
+                InvalidEmail::SubjectMissing,
+            ),
+        ] {
+            let result = EmailMessage::parse_rest_api(raw.as_bytes())
+                .and_then(|email| email.event_id_salt());
+            assert_eq!(result.unwrap_err(), expected);
+        }
+        let invalid = EmailMessage::parse_rest_api(b"From: alice\r\n\r\n").unwrap();
+        assert_eq!(
+            invalid.sender_domain().unwrap_err(),
+            InvalidEmail::SenderDomainInvalid
+        );
+    }
+
+    #[test]
+    fn empty_and_unknown_subjects_still_work_and_date_remains_an_identity_fallback() {
+        for subject in ["", "unknown instruction"] {
+            let raw = format!("From: Alice <alice@example.com>\r\nSubject: {subject}\r\nDate: Thu, 22 Oct 2026 12:00:00 +0000\r\n\r\nbody");
+            let email = EmailMessage::parse_rest_api(raw.as_bytes()).unwrap();
+            assert_eq!(email.sender_domain().unwrap(), "example.com");
+            assert_eq!(email.event_id_salt().unwrap().len(), 32);
+        }
+    }
 }

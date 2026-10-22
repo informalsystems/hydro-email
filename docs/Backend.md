@@ -363,8 +363,25 @@ an action or a rejection, and cannot switch between them. Rejections store their
 chain and service handler directly; other messages get these through their action.
 The rejection reason is kept even if marking the email read fails or succeeds.
 
-Operators do not use this endpoint yet. Reporting permanent failures, retrying
-temporary failures, and validating subjects will be added in follow-up work.
+The email reader reports permanent failures through this endpoint:
+
+- `email_parse_failed`: fetched content cannot be parsed.
+- `email_sender_missing`: no sender could be extracted.
+- `email_sender_domain_invalid`: the sender cannot be parsed as one mailbox with a domain.
+- `email_subject_missing`: no Subject header exists.
+- `email_identity_missing`: neither Message-ID nor Date exists.
+
+Only a confirmed backend rejection is cached as handled. The acknowledgment
+worker then marks the email read, while the next poll can select a newer message.
+A failed rejection request leaves the message uncached for another poll. Repeating
+the rejection after an operator restart is safe.
+
+Connection, query, missing FETCH body, DNS, and other verification service failures
+end the poll without rejecting or caching the message. Normal polling tries again;
+there is no additional reader retry schedule. The `read-mail` diagnostic does not
+report rejections or cache messages. Empty and unsupported subjects retain their
+existing behavior until the subject-validation follow-up; DKIM result enforcement
+also remains separate work.
 
 ### Mailbox acknowledgment
 
@@ -442,7 +459,7 @@ submission. Metadata remains optional on the API for aggregator callbacks.
 
 The backend's chain and service-handler settings must match the components'
 `CHAIN` and `SERVICE_HANDLER_CONTRACT_ADDRESS`. The component rejects mismatched
-action records. For operators on another machine, configure a reachable backend
+action and rejection records. For operators on another machine, configure a reachable backend
 URL and listener rather than the localhost default.
 
 Before returning a submit instruction, the aggregator uses WAVS's event ID and

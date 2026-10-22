@@ -1,6 +1,6 @@
 pub mod cache;
 pub mod imap;
-mod parser;
+pub(crate) mod parser;
 pub mod rest_api;
 pub mod verify;
 
@@ -14,7 +14,7 @@ use crate::{
 };
 
 pub struct ReadEmail {
-    pub message: EmailMessage,
+    pub message: Result<EmailMessage, parser::InvalidEmail>,
     pub cache: cache::ProcessedEmails,
     pub id: cache::MessageId,
 }
