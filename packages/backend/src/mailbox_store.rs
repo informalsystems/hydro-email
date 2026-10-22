@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::PgConnection;
 
-use crate::action_store::ActionStore;
+use crate::action_store::{Action, ActionStore};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -60,11 +60,12 @@ impl ActionStore {
     pub(crate) async fn attach_mailbox_message(
         &self,
         tx: &mut PgConnection,
-        action_id: i64,
-        action_status: &str,
+        action: &Action,
         message: &MailboxMessageIdentity,
     ) -> Result<bool> {
-        let ready = matches!(action_status, "completed" | "failed");
+        let action_id = action.id;
+        let ready =
+            matches!(action.status.as_str(), "completed" | "failed") || action.closed_at.is_some();
         let inserted: Option<i64> = sqlx::query_scalar(
             "INSERT INTO action_mailbox_messages
              (action_id, folder, uid_validity, uid,

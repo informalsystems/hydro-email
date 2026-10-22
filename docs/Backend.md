@@ -41,8 +41,9 @@ Migrations embedded in the binary run at startup. `/healthz` is liveness;
 `/readyz` verifies database connectivity. Both are unauthenticated and disclose no
 configuration.
 
-Provisioning is **off by default**. In this mode authenticated requests are saved
-as queued jobs, with no chain connections or transactions. To enable it, configure:
+Provisioning is **off by default**. Registration requests are saved as queued
+jobs without broadcasting transactions. Action reconciliation still performs
+read-only chain queries. To enable registration provisioning, configure:
 
 - `BACKEND_PROXY_CODE_ID`: existing uploaded Hydro proxy code ID.
 - `BACKEND_SERVICE_HANDLER_ADDRESS`: proxy application admin.
@@ -199,9 +200,9 @@ Actions start as `received`, then become `submitting` while WAVS handles submiss
 and confirmation. Outcomes are `completed`, `failed`, or `outcome_unknown`.
 Creating an action records its initial `received` transition atomically. Result
 reporting updates the action and history atomically. The WAVS aggregator reports
-actions and callback results through these endpoints. Chain reconciliation will
-follow separately. Email failures before a WAVS event ID exists
-are outside this schema's current scope.
+actions and callback results through these endpoints. The reconciliation worker
+checks unfinished records against the chain. Email validation failures before an
+action exists remain separate work.
 
 ### Create an action
 
@@ -259,7 +260,7 @@ The reader supplies this field. Aggregator callbacks may omit it.
 
 The response contains `id`, `chain_key`, `service_handler_address`, `event_id`,
 `user_id`, `payload`, `status`, `tx_hash`, `error_code`, `error_detail`, `submitted_at`,
-`last_checked_at`, `next_check_at`, `created_at`, and `updated_at`.
+`closed_at`, `last_checked_at`, `next_check_at`, `created_at`, and `updated_at`.
 The endpoint records an action reported by an authenticated caller; it does not
 verify WAVS signatures or establish that the action has executed on-chain.
 
@@ -296,6 +297,8 @@ completion or failure. Completed actions cannot be overwritten by later failure
 or uncertainty reports, and conflicting transaction hashes remain rejected. Identical
 repeated results return `200` without modifying timestamps or adding history.
 Additional hash information for an unknown result is recorded with a history entry.
+A completion discovered through the handled-event query may have no transaction
+hash; a later successful callback can supply it without reopening the action.
 Out-of-order reports, incompatible terminal results, and attempts to restart an
 action return `409 action_conflict`.
 
@@ -330,12 +333,13 @@ queries or action retry operations are added.
 Each mailbox message has its own acknowledgment state:
 
 - `waiting`: the action has no final outcome yet.
-- `pending`: the action completed or failed, and the message needs acknowledgment.
+- `pending`: the action completed, failed, or closed as unknown; acknowledgment is due.
 - `acknowledged`: the message has been acknowledged.
 - `obsolete`: UIDVALIDITY changed; its old identifiers cannot be used safely.
 
-Unresolved `outcome_unknown` actions remain waiting. Deciding when to close them
-is separate reconciliation work.
+Unresolved `outcome_unknown` actions remain waiting. Once reconciliation closes
+an unknown outcome, its messages become pending. Later delivered copies attached
+to a closed action are also immediately eligible for acknowledgment.
 
 Acknowledgment failures can be retried without resubmitting the action. This state
 is internal to the backend and has no HTTP endpoints.
@@ -354,6 +358,33 @@ repeating a flag update after a crash is safe.
 
 Keep the receiving account consistent between backend and operators. This setup
 supports one receiving account. Mailbox errors are stored as safe error codes.
+
+## Action reconciliation
+
+The backend always runs a read-only reconciliation worker. It uses the configured
+chain from WAVS and `BACKEND_SERVICE_HANDLER_ADDRESS`; no signer is required.
+Connections are established when checks run, so a temporary RPC outage does not
+prevent backend startup.
+
+- `received` past the grace period becomes `failed` with `submission_not_started`.
+- With a hash, confirmed transaction success becomes `completed` and confirmed
+  transaction failure becomes `failed`.
+- Without a hash, or when the transaction is explicitly not found, the worker
+  checks the contract's `event_processed` query. A handled event is `completed`.
+- Otherwise it keeps checking until the grace period expires, then closes the
+  action as `outcome_unknown`. RPC errors and timeouts defer closure, even after
+  the grace period. Transaction absence alone is not a confirmed failure.
+
+`BACKEND_RECONCILIATION_INTERVAL_SECONDS` defaults to 30 and
+`BACKEND_RECONCILIATION_GRACE_SECONDS` to 900 (15 minutes).
+The grace period starts at creation for `received` and at submission intent for
+submitted actions; callback updates do not extend it.
+
+`closed_at` distinguishes closed unknown outcomes from unresolved ones. Closure,
+history, and mailbox acknowledgment eligibility are saved atomically. Scheduling
+survives restarts, and concurrent callbacks invalidate stale worker observations.
+A later confirmed success may still resolve a closed unknown outcome. The worker
+never resubmits transactions or restarts actions.
 
 ## WAVS aggregator integration
 
@@ -397,10 +428,10 @@ additional signatures.
 Callbacks recover the database action ID through idempotent creation, so no local
 ID cache is required. If API reporting fails after submission, the component logs
 an error and returns a callback error without requesting another transaction.
-The saved action can remain unfinished until the planned reconciliation worker
-checks it. Callback retry and action reconciliation remain separate work. If the
-aggregator fails after the reader has cached a message, the email stays unread, but the
-operator cache prevents another attempt until its restart.
+The reconciliation worker resolves or closes the saved action without retrying
+submission. A cached email may remain unread while that action is unresolved;
+closure makes it eligible for acknowledgment. If callback reporting fails, the
+reconciliation worker checks the chain to recover the outcome.
 
 ## Validation
 
@@ -423,7 +454,9 @@ They do not broadcast chain transactions.
 
 `registrations.rs` covers registration API, persistence, and worker behavior.
 `actions.rs` covers action API, persistence, database constraints, and acknowledgment
-worker recovery. Local fake IMAP tests check flag updates and UIDVALIDITY safety.
+worker recovery. `reconciliation.rs` covers chain results, grace periods, RPC
+outages, concurrent callbacks, and atomic closure. Local fake IMAP tests check
+flag updates and UIDVALIDITY safety.
 Each Postgres test applies all migrations to a fresh test database.
 
 Component tests run without a database or chain:

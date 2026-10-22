@@ -26,6 +26,7 @@ pub struct Action {
     pub error_code: Option<String>,
     pub error_detail: Option<String>,
     pub submitted_at: Option<DateTime<Utc>>,
+    pub closed_at: Option<DateTime<Utc>>,
     pub last_checked_at: Option<DateTime<Utc>>,
     pub next_check_at: DateTime<Utc>,
     pub created_at: DateTime<Utc>,
@@ -195,11 +196,16 @@ impl ActionStore {
         }
         let allowed = match status {
             "submitting" => current.status == "received",
-            // Another aggregator may confirm success after a failure callback.
-            "completed" => matches!(
-                current.status.as_str(),
-                "submitting" | "outcome_unknown" | "failed"
-            ),
+            // Late success can resolve failure or supply a hash for a completion
+            // previously established only through the handled-event query.
+            "completed" => {
+                matches!(
+                    current.status.as_str(),
+                    "submitting" | "outcome_unknown" | "failed"
+                ) || (current.status == "completed"
+                    && current.tx_hash.is_none()
+                    && tx_hash.is_some())
+            }
             _ => matches!(current.status.as_str(), "submitting" | "outcome_unknown"),
         };
         if !allowed {
@@ -208,6 +214,7 @@ impl ActionStore {
         let action = sqlx::query_as(
             "UPDATE actions SET status=$2, tx_hash=$3, error_code=$4, error_detail=$5,
              submitted_at=CASE WHEN $2='submitting' THEN now() ELSE submitted_at END,
+             closed_at=CASE WHEN $2 IN ('completed','failed') THEN COALESCE(closed_at,now()) ELSE closed_at END,
              updated_at=now(), next_check_at=now() WHERE id=$1 RETURNING *",
         )
         .bind(id)
@@ -226,7 +233,7 @@ impl ActionStore {
         .bind(error_detail)
         .execute(&mut *tx)
         .await?;
-        if matches!(status, "completed" | "failed") {
+        if matches!(status, "completed" | "failed") || current.closed_at.is_some() {
             sqlx::query(
                 "UPDATE action_mailbox_messages SET acknowledgment_status='pending',
                  next_attempt_at=now(), updated_at=now()
@@ -287,7 +294,7 @@ impl ActionStore {
         }
         if let Some(message) = mailbox_message {
             if !self
-                .attach_mailbox_message(&mut tx, action.id, &action.status, &message)
+                .attach_mailbox_message(&mut tx, &action, &message)
                 .await?
             {
                 return Ok(CreateAction::Conflict);

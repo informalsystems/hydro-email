@@ -25,6 +25,7 @@ sha2.workspace = true
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-webpki", "postgres", "chrono", "json", "derive", "migrate", "macros"] }
 subtle = "2.6"
 tokio.workspace = true
+tonic = "0.13"
 tracing.workspace = true
 tracing-subscriber.workspace = true
 wavs-types.workspace = true

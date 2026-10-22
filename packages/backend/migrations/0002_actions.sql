@@ -12,12 +12,14 @@ CREATE TABLE actions (
     error_code TEXT,
     error_detail TEXT CHECK (char_length(error_detail) BETWEEN 1 AND 1024),
     submitted_at TIMESTAMPTZ,
+    closed_at TIMESTAMPTZ,
     last_checked_at TIMESTAMPTZ,
     next_check_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 
-    UNIQUE (chain_key, service_handler_address, event_id)
+    UNIQUE (chain_key, service_handler_address, event_id),
+    CHECK (closed_at IS NULL OR status IN ('completed', 'failed', 'outcome_unknown'))
 );
 
 CREATE INDEX actions_user_history
@@ -25,7 +27,7 @@ CREATE INDEX actions_user_history
 
 CREATE INDEX actions_reconciliation
     ON actions (chain_key, service_handler_address, next_check_at, id)
-    WHERE status IN ('submitting', 'outcome_unknown');
+    WHERE closed_at IS NULL AND status IN ('received', 'submitting', 'outcome_unknown');
 
 CREATE TABLE action_transitions (
     id BIGSERIAL PRIMARY KEY,
