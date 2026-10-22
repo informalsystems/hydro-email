@@ -1,18 +1,60 @@
 use anyhow::{ensure, Result};
-use app_component_backend_client::{ActionRecord, BackendClient};
+use app_component_backend_client::{ActionRecord, BackendClient, RejectionRecord};
 use app_contract_api::service_handler::msg::CustomExecuteMsg;
 use serde_json::{json, Value};
 
-use crate::email::cache::MessageId;
+use crate::email::{
+    cache::{CacheStore, MessageId, ProcessedEmails},
+    parser::InvalidEmail,
+};
 
 pub(crate) trait Backend {
     async fn create(&self, request: Value) -> Result<ActionRecord>;
+    async fn reject(&self, request: Value) -> Result<RejectionRecord>;
 }
 
 impl Backend for BackendClient {
-    async fn create(&self, request: Value) -> Result<ActionRecord> {
-        self.post("/v1/actions", Some(request)).await
+    async fn reject(&self, request: Value) -> Result<RejectionRecord> {
+        self.reject_mailbox_message(request).await
     }
+
+    async fn create(&self, request: Value) -> Result<ActionRecord> {
+        self.create_action(request).await
+    }
+}
+
+pub(crate) async fn reject(
+    backend: &impl Backend,
+    chain: &str,
+    handler: &str,
+    message: MessageId,
+    reason: InvalidEmail,
+    cache: &ProcessedEmails<impl CacheStore>,
+) -> Result<()> {
+    let code = reason.code();
+    let saved = backend
+        .reject(json!({
+            "mailbox_message": {
+                "folder": "INBOX", "uid_validity": message.uid_validity, "uid": message.uid,
+            },
+            "error_code": code,
+        }))
+        .await?;
+    ensure!(
+        saved.id > 0
+            && saved.action_id.is_none()
+            && saved.rejection_chain_key == chain
+            && saved.rejection_service_handler_address == handler
+            && saved.rejection_code == code
+            && saved.folder == "INBOX"
+            && saved.uid_validity == message.uid_validity
+            && saved.uid == message.uid,
+        "Backend rejection does not match the mailbox message and deployment"
+    );
+    // Never suppress the message until its rejection is safely persisted.
+    cache.remember(message)?;
+    println!("Email rejected: {code}");
+    Ok(())
 }
 
 // Register metadata separately so mailbox identifiers never enter the signed payload.
@@ -60,12 +102,20 @@ mod tests {
     use futures::executor::block_on;
     use std::cell::RefCell;
 
+    #[derive(Default)]
     struct MockBackend {
+        rejection_reply: Option<RejectionRecord>,
         reply: Option<ActionRecord>,
         requests: RefCell<Vec<Value>>,
     }
 
     impl Backend for MockBackend {
+        async fn reject(&self, _: Value) -> Result<RejectionRecord> {
+            self.rejection_reply
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("API unavailable"))
+        }
+
         async fn create(&self, request: Value) -> Result<ActionRecord> {
             self.requests.borrow_mut().push(request);
             self.reply
@@ -97,6 +147,7 @@ mod tests {
                     status: status.into(),
                 }),
                 requests: RefCell::default(),
+                ..Default::default()
             };
             let run = || {
                 block_on(register(
@@ -141,6 +192,7 @@ mod tests {
             let backend = MockBackend {
                 reply,
                 requests: RefCell::default(),
+                ..Default::default()
             };
             assert!(block_on(register(
                 &backend,
@@ -155,5 +207,64 @@ mod tests {
             ))
             .is_err());
         }
+    }
+
+    #[test]
+    fn caches_rejected_email_only_after_backend_confirmation() {
+        struct TestCache(std::cell::Cell<bool>);
+        impl CacheStore for &TestCache {
+            fn keys(&self) -> Result<Vec<String>> {
+                Ok(Vec::new())
+            }
+            fn remember(&self, _: &str) -> Result<()> {
+                self.0.set(true);
+                Ok(())
+            }
+            fn remove(&self, _: &str) -> Result<()> {
+                panic!("Unexpected cache removal")
+            }
+        }
+        let writes = TestCache(std::cell::Cell::new(false));
+        let cache = ProcessedEmails::load(&writes).unwrap();
+        let message = MessageId {
+            uid_validity: 100,
+            uid: 10,
+        };
+        let mut backend = MockBackend::default();
+
+        // Failed request: do not cache the email.
+        assert!(block_on(reject(
+            &backend,
+            "dev:local",
+            "handler",
+            message,
+            InvalidEmail::ParseFailed,
+            &cache
+        ))
+        .is_err());
+        assert!(!writes.0.get());
+
+        backend.rejection_reply = Some(RejectionRecord {
+            id: 1,
+            action_id: None,
+            rejection_chain_key: "dev:local".into(),
+            rejection_service_handler_address: "handler".into(),
+            rejection_code: "email_parse_failed".into(),
+            folder: "INBOX".into(),
+            uid_validity: 100,
+            uid: 10,
+        });
+
+        // Confirmed rejection: cache the email.
+        block_on(reject(
+            &backend,
+            "dev:local",
+            "handler",
+            message,
+            InvalidEmail::ParseFailed,
+            &cache,
+        ))
+        .unwrap();
+        assert!(writes.0.get());
     }
 }

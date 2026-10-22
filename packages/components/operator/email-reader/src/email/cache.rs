@@ -103,7 +103,7 @@ impl ProcessedEmails {
 }
 
 impl<S: CacheStore> ProcessedEmails<S> {
-    fn load(store: S) -> Result<Self> {
+    pub(crate) fn load(store: S) -> Result<Self> {
         let snapshot = store
             .keys()?
             .iter()

@@ -4,7 +4,9 @@ use app_contract_api::service_handler::msg::CustomExecuteMsg;
 use serde_json::{json, Value};
 
 pub(crate) trait Backend {
-    async fn post(&self, path: &str, body: Option<Value>) -> Result<ActionRecord>;
+    async fn create_action(&self, body: Value) -> Result<ActionRecord>;
+    async fn report_submission(&self, id: i64) -> Result<ActionRecord>;
+    async fn report_result(&self, id: i64, body: Value) -> Result<ActionRecord>;
 }
 
 pub(crate) struct ActionReport {
@@ -29,13 +31,10 @@ impl ActionReport {
 
     async fn create(&self, backend: &impl Backend) -> Result<ActionRecord> {
         let action = backend
-            .post(
-                "/v1/actions",
-                Some(json!({
-                    "event_id": self.event_id,
-                    "payload": self.payload,
-                })),
-            )
+            .create_action(json!({
+                "event_id": self.event_id,
+                "payload": self.payload,
+            }))
             .await?;
         self.validate(&action)?;
         Ok(action)
@@ -57,9 +56,7 @@ impl ActionReport {
         let action = self.create(backend).await?;
         match action.status.as_str() {
             "received" => {
-                let updated = backend
-                    .post(&format!("/v1/actions/{}/submission", action.id), None)
-                    .await?;
+                let updated = backend.report_submission(action.id).await?;
                 self.validate(&updated)?;
                 ensure!(
                     updated.id == action.id && updated.status == "submitting",
@@ -81,21 +78,14 @@ impl ActionReport {
         // Reuse the idempotent create endpoint to recover the action ID after a restart.
         let action = self.create(backend).await?;
         if action.status == "received" {
-            let updated = backend
-                .post(&format!("/v1/actions/{}/submission", action.id), None)
-                .await?;
+            let updated = backend.report_submission(action.id).await?;
             self.validate(&updated)?;
             ensure!(
                 updated.id == action.id && updated.status == "submitting",
                 "Backend did not record submission intent"
             );
         }
-        let updated = backend
-            .post(
-                &format!("/v1/actions/{}/result", action.id),
-                Some(result.clone()),
-            )
-            .await?;
+        let updated = backend.report_result(action.id, result.clone()).await?;
         self.validate(&updated)?;
         ensure!(
             updated.id == action.id && Some(updated.status.as_str()) == result["status"].as_str(),
@@ -192,13 +182,27 @@ mod tests {
         }
     }
 
-    impl Backend for MockBackend {
-        async fn post(&self, path: &str, body: Option<Value>) -> Result<ActionRecord> {
+    impl MockBackend {
+        fn reply(&self, path: &str, body: Option<Value>) -> Result<ActionRecord> {
             self.requests.borrow_mut().push((path.into(), body));
             self.replies
                 .borrow_mut()
                 .pop_front()
                 .expect("Unexpected API request")
+        }
+    }
+
+    impl Backend for MockBackend {
+        async fn create_action(&self, body: Value) -> Result<ActionRecord> {
+            self.reply("/v1/actions", Some(body))
+        }
+
+        async fn report_submission(&self, id: i64) -> Result<ActionRecord> {
+            self.reply(&format!("/v1/actions/{id}/submission"), None)
+        }
+
+        async fn report_result(&self, id: i64, body: Value) -> Result<ActionRecord> {
+            self.reply(&format!("/v1/actions/{id}/result"), Some(body))
         }
     }
 

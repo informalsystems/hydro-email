@@ -15,6 +15,18 @@ pub struct ActionRecord {
     pub status: String,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct RejectionRecord {
+    pub id: i64,
+    pub action_id: Option<i64>,
+    pub rejection_chain_key: String,
+    pub rejection_service_handler_address: String,
+    pub rejection_code: String,
+    pub folder: String,
+    pub uid_validity: u32,
+    pub uid: u32,
+}
+
 pub struct BackendClient {
     base_url: String,
     api_key: String,
@@ -59,7 +71,29 @@ impl BackendClient {
             .map_err(|_| anyhow::anyhow!("Could not construct backend request"))
     }
 
-    pub async fn post(&self, path: &str, body: Option<Value>) -> Result<ActionRecord> {
+    pub async fn create_action(&self, body: Value) -> Result<ActionRecord> {
+        self.post_json("/v1/actions", Some(body)).await
+    }
+
+    pub async fn report_submission(&self, id: i64) -> Result<ActionRecord> {
+        self.post_json(&format!("/v1/actions/{id}/submission"), None)
+            .await
+    }
+
+    pub async fn report_result(&self, id: i64, body: Value) -> Result<ActionRecord> {
+        self.post_json(&format!("/v1/actions/{id}/result"), Some(body))
+            .await
+    }
+
+    pub async fn reject_mailbox_message(&self, body: Value) -> Result<RejectionRecord> {
+        self.post_json("/v1/mailbox-rejections", Some(body)).await
+    }
+
+    async fn post_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<T> {
         let mut client = Client::new();
         client.set_connect_timeout(Duration::from_secs(5));
         client.set_first_byte_timeout(Duration::from_secs(10));
