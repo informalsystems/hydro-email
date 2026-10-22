@@ -41,15 +41,19 @@ async fn admit(store: &RegistrationStore, email: &str) -> String {
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires isolated Postgres"]
-async fn concurrent_duplicates_reserve_one_registration(pool: PgPool) {
+async fn concurrent_domain_case_variants_reserve_one_registration(pool: PgPool) {
     let store = store(pool);
-    let id = UserId::new_email_address("alice@example.com").to_string();
     let mut tasks = Vec::new();
-    for _ in 0..12 {
+    for email in [
+        "alice@example.com",
+        "alice@Example.com",
+        "alice@EXAMPLE.COM",
+        "alice@eXaMpLe.CoM",
+    ] {
         let store = store.clone();
-        let id = id.clone();
+        let id = UserId::new_email_address(email).to_string();
         tasks.push(tokio::spawn(async move {
-            store.admit("alice@example.com", &id, 1, 1).await.unwrap()
+            store.admit(email, &id, 1, 1).await.unwrap()
         }));
     }
     let mut created = 0;
@@ -612,10 +616,17 @@ async fn http_authentication_validation_and_idempotency(pool: PgPool) {
     let id = body["user_id"].as_str().unwrap();
     let response = app
         .clone()
-        .oneshot(request(r#"{"email":"alice@example.com"}"#, Some(key)))
+        .oneshot(request(r#"{"email":"alice@EXAMPLE.COM"}"#, Some(key)))
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    // A distinct local-part case must be treated as a new registration, not an alias.
+    let response = app
+        .clone()
+        .oneshot(request(r#"{"email":"Alice@example.com"}"#, Some(key)))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     let response = app
         .clone()
         .oneshot(request(r#"{"email":"bob@example.com"}"#, Some(key)))
