@@ -644,3 +644,135 @@ async fn http_authentication_validation_and_idempotency(pool: PgPool) {
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
 }
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn email_lookup_is_authenticated_normalized_and_read_only(pool: PgPool) {
+    let key = "test-credential-at-least-32-characters";
+    let store = store(pool.clone());
+    let id = admit(&store, "Alice+test@example.com").await;
+    let app = router(ApiState {
+        store: store.clone(),
+        actions: ActionStore {
+            pool: pool.clone(),
+            chain_key: "dev:local".into(),
+            service_handler_address: "handler".into(),
+        },
+        api_key_hash: Sha256::digest(key).into(),
+        hourly_quota: 0,
+        daily_quota: 0,
+    });
+    let request = |query: &str, token: Option<&str>| {
+        let mut request = Request::get(format!("/v1/registrations/lookup{query}"));
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+        request.body(Body::empty()).unwrap()
+    };
+    for token in [None, Some("wrong-key")] {
+        let response = app
+            .clone()
+            .oneshot(request("?email=Alice%2Btest%40example.com", token))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+    for query in [
+        "",
+        "?email=invalid",
+        "?email=Alice%20%3CAlice%40example.com%3E",
+        "?email=Alice%40example.com&extra=1",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(query, Some(key)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+    for query in [
+        "?email=alice%2Btest%40example.com",
+        "?email=missing%40example.com",
+    ] {
+        let response = app
+            .clone()
+            .oneshot(request(query, Some(key)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body["error"], "registration_not_found");
+    }
+    for status in ["queued", "completed", "failed", "unknown"] {
+        let job = store.get(&id).await.unwrap().unwrap();
+        store
+            .transition(&job, status, Some("proxy-address"), None, None, None)
+            .await
+            .unwrap();
+        let before = serde_json::to_value(store.get(&id).await.unwrap().unwrap()).unwrap();
+        let response = app
+            .clone()
+            .oneshot(request(
+                "?email=%20Alice%2Btest%40EXAMPLE.COM%20",
+                Some(key),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 4096).await.unwrap()).unwrap();
+        assert_eq!(body, before);
+        assert_eq!(body["user_id"], id);
+        assert_eq!(body["proxy_address"], "proxy-address");
+        assert!(body.get("email").is_none());
+        assert_eq!(
+            serde_json::to_value(store.get(&id).await.unwrap().unwrap()).unwrap(),
+            before
+        );
+    }
+    let registrations: i64 = sqlx::query_scalar("SELECT count(*) FROM registrations")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let transitions: i64 = sqlx::query_scalar("SELECT count(*) FROM registration_transitions")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    let attempts: i64 = sqlx::query_scalar("SELECT count(*) FROM registration_attempts")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(registrations, 1);
+    assert_eq!(transitions, 5); // Initial admission plus the four explicit test transitions.
+    assert_eq!(attempts, 0);
+
+    // Reads use the same chain and registry scope as status lookup by user ID.
+    for other_store in [
+        RegistrationStore {
+            chain_key: "other-chain".into(),
+            ..store.clone()
+        },
+        RegistrationStore {
+            registry_address: "other-registry".into(),
+            ..store
+        },
+    ] {
+        let scoped_app = router(ApiState {
+            store: other_store,
+            actions: ActionStore {
+                pool: pool.clone(),
+                chain_key: "dev:local".into(),
+                service_handler_address: "handler".into(),
+            },
+            api_key_hash: Sha256::digest(key).into(),
+            hourly_quota: 0,
+            daily_quota: 0,
+        });
+        let response = scoped_app
+            .oneshot(request("?email=Alice%2Btest%40example.com", Some(key)))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+}
