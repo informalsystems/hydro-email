@@ -349,8 +349,9 @@ without creating an action, event ID, or action transition:
 
 The backend supplies the configured chain and service-handler scope. The request
 accepts no sender, subject, email contents, or raw error details. Error codes must
-contain 1–64 lowercase ASCII letters, digits, or underscores. Callers must classify
-permanent failures before using this endpoint. Temporary outages must not be rejected.
+contain 1–64 lowercase ASCII letters, digits, or underscores. Use this endpoint
+for invalid emails or expired verification retries, not outages still within the
+retry window.
 
 - `201`: rejection saved; returns the internal mailbox record with `action_id: null`,
   a `rejection_code`, and acknowledgment status `pending`.
@@ -367,24 +368,61 @@ an action or a rejection, and cannot switch between them. Rejections store their
 chain and service handler directly; other messages get these through their action.
 The rejection reason is kept even if marking the email read fails or succeeds.
 
-The email reader reports permanent failures through this endpoint:
+The email reader uses these rejection codes:
 
 - `email_parse_failed`: fetched content cannot be parsed.
-- `email_sender_missing`: no sender could be extracted.
+- `email_sender_missing`: no nonempty From header exists.
+- `email_sender_ambiguous`: more than one From header exists.
+- `email_authentication_failed`: DKIM or the signed-header policy failed.
+- `email_verification_expired`: verification did not complete within the one-hour retry window.
 - `email_sender_domain_invalid`: the sender cannot be parsed as one mailbox with a domain.
 - `email_subject_missing`: no Subject header exists.
 - `email_subject_invalid`: the subject is empty, unsupported, or malformed.
 - `email_identity_missing`: neither Message-ID nor Date exists.
 
-Only a confirmed backend rejection is cached as handled. The acknowledgment
-worker then marks the email read, while the next poll can select a newer message.
-A failed rejection request leaves the message uncached for another poll. Repeating
-the rejection after an operator restart is safe.
+After the backend confirms rejection, the reader caches the email as handled and
+the acknowledgment worker marks it read. Failed rejection requests are retried.
 
-Connection, query, missing FETCH body, DNS, and other verification service failures
-end the poll without rejecting or caching the message. Normal polling tries again;
-there is no additional reader retry schedule. The `read-mail` diagnostic does not
-report rejections or cache messages. DKIM result enforcement remains separate work.
+Mailbox connection, search, or fetch failures stop the poll and are retried on the
+next poll. Temporary verification failures, such as DNS outages, leave the email
+unread and retry after 30 seconds, then 1 minute, 2 minutes, and increasing delays
+up to 5 minutes. Newer emails can be processed while it waits.
+
+After one hour from the first verification failure, the next eligible poll rejects
+the email with `email_verification_expired` and queues it to be marked read. This
+means verification timed out, not that the email was proven invalid. Expired
+instructions are not executed, even if saving the rejection needs another attempt.
+Retry state is local to each operator and resets on restart, including the one-hour
+timer. Processing or rejection ends retries; read emails and old UIDVALIDITY entries
+are removed from the cache.
+
+### Email authentication
+
+The reader requires one From header containing one mailbox and a valid DKIM
+signature from that exact domain (ignoring domain case). Sender and Resent-From
+cannot replace From. Missing, invalid, or expired signatures and missing, revoked,
+or invalid keys cause rejection.
+
+Custom-domain email must have DKIM configured with the sending provider and the
+domain's DNS so the signing domain matches the From domain. A valid signature
+using only the provider's fallback domain does not satisfy this requirement.
+
+Each signature matching the From domain must sign From, Subject, and Message-ID
+(or Date if Message-ID is missing). Each required header must appear exactly once.
+Matching signatures must use RSA-SHA256 with a key of at least 1024 bits or
+Ed25519-SHA256, and at least one must pass verification. Duplicate signature tags
+are rejected.
+
+Quoted or whitespace-containing mailbox addresses cannot use relaxed DKIM header
+rules, which could make different addresses look identical. Quoted display names,
+such as `"Alice Smith" <alice@example.com>`, are allowed.
+
+Event IDs hash From, Subject, and Message-ID (or Date), normalizing whitespace so
+changes allowed by DKIM cannot replay the email under a new ID. Finish in-flight
+mail before updating the reader because this changes how event IDs are derived.
+
+DKIM trusts the signing provider to authorize the From address. It does not protect
+against a compromised mailbox or provider. Authentication errors omit raw details.
 
 ### Instruction subjects
 
@@ -404,8 +442,8 @@ validation is left to execution.
 
 Invalid subjects are rejected before action creation and use the usual mailbox
 acknowledgment flow. The contract also returns an error for invalid instructions;
-it never substitutes a deposit. Subjects in the signed payload and event salt
-remain unchanged. Deploying this behavior requires updating both the reader
+it never substitutes a deposit. Subjects in the signed action payload retain their
+original spelling. Deploying subject validation requires updating both the reader
 component and service-handler contract; there are no backend schema changes.
 
 ### Mailbox acknowledgment
