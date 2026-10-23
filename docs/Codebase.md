@@ -20,6 +20,7 @@ But really, that's it... if you find yourself adding configuration somewhere els
   - [backend/docker](../backend/docker) - docker compose files (populated at runtime)
   - [backend/wavs-home](../backend/wavs-home) - WAVS home (operator and aggregator) 
 - [docs/](../docs) - documentation
+- [frontend/](../frontend) - local testing UI; see its [README](../frontend/README.md) for run instructions
 - [packages/](../packages) - all Rust code packages
   - [packages/backend](../packages/backend) - shared HTTP API, Postgres storage, and registration worker
   - [packages/client](../packages/client) - client package

@@ -122,6 +122,27 @@ Email addresses are stored in Postgres but excluded from responses. Internal RPC
 errors and credentials are not returned. Access to Postgres includes access to
 email addresses; restrict it accordingly.
 
+### Look up registration by email
+
+`GET /v1/registrations/lookup?email=alice%40example.com` requires the same bearer
+credential and returns the same registration representation as the user-ID status
+route, including `user_id`, provisioning status, and proxy address. URL-encode the
+email query value (in particular, encode `+` as `%2B` for plus aliases).
+
+The backend validates the email and derives its user ID using the same logic as
+registration: outer whitespace is trimmed, domain case is normalized, and
+local-part case is preserved. The email is not included in the response.
+
+- `200`: existing registration, in any provisioning state.
+- `400`: invalid email or query parameters.
+- `401`: invalid/missing credential.
+- `404` with `registration_not_found`: no registration in this backend's configured
+  chain and registry. This does not query on-chain mappings directly.
+- `503`: database unavailable.
+
+This is read-only: it does not create a registration, retry a failed/unknown job,
+reserve quota, or submit transactions.
+
 ## Registration provisioning and failures
 
 ```text

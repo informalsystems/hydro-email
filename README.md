@@ -7,6 +7,7 @@
 - [LocalEmail](docs/LocalEmail.md): run local email server for testing. 
 - [Codebase](docs/Codebase.md): overview of the code structure
 - [Backend](docs/Backend.md): registration API, Postgres, and provisioning worker.
+- [Testing frontend](frontend/README.md): local registration, email action composer, and action history.
 
 # Notes
 
