@@ -32,6 +32,7 @@ pub fn router(state: ApiState) -> Router {
     let state = Arc::new(state);
     let protected = Router::new()
         .route("/v1/registrations", post(register))
+        .route("/v1/registrations/lookup", get(lookup_registration))
         .route("/v1/registrations/{user_id}", get(status))
         .route("/v1/mailbox-rejections", post(reject_mailbox_message))
         .route("/v1/actions", post(create_action).get(list_actions))
@@ -318,6 +319,16 @@ async fn status(
         .map_err(internal)?
         .ok_or(ApiError(StatusCode::NOT_FOUND, "registration_not_found"))?;
     Ok(Json(row).into_response())
+}
+
+async fn lookup_registration(
+    State(state): State<Arc<ApiState>>,
+    Query(input): Query<RegisterRequest>,
+) -> Result<Response, ApiError> {
+    let email =
+        validate_email(&input.email).ok_or(ApiError(StatusCode::BAD_REQUEST, "invalid_email"))?;
+    let user_id = UserId::new_email_address(&email);
+    status(State(state), Path(user_id.to_string())).await
 }
 
 async fn ready(State(state): State<Arc<ApiState>>) -> StatusCode {
