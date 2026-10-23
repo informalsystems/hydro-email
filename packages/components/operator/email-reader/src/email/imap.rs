@@ -61,7 +61,7 @@ pub async fn read_next_email_imap(config: ImapConfig) -> AppResult<Option<ReadEm
 
     // A missing FETCH body is a mailbox failure, not proof of an invalid email.
     let body = fetch.body().ok_or(AppError::FailedToFetchEmail(id.uid))?;
-    let message = EmailMessage::parse_imap(fetch, body);
+    let message = EmailMessage::parse_imap(body);
 
     Ok(Some(ReadEmail { message, cache, id }))
 }

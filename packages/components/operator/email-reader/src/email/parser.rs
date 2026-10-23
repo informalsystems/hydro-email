@@ -1,4 +1,3 @@
-use imap::types::Fetch;
 use mailparse::*;
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
@@ -11,6 +10,12 @@ pub enum InvalidEmail {
     ParseFailed,
     #[error("email_sender_missing")]
     SenderMissing,
+    #[error("email_sender_ambiguous")]
+    SenderAmbiguous,
+    #[error("email_authentication_failed")]
+    AuthenticationFailed,
+    #[error("email_verification_expired")]
+    VerificationExpired,
     #[error("email_sender_domain_invalid")]
     SenderDomainInvalid,
     #[error("email_subject_missing")]
@@ -28,7 +33,7 @@ impl InvalidEmail {
 }
 
 pub struct EmailMessage {
-    // 1) "Original sender" best-effort (From / Resent-From / Sender / envelope)
+    // 1) Author from the single From header; alternate sender headers are not trusted.
     pub original_sender: String,
     // 2) All DKIM-Signature header values (there can be multiple)
     pub dkim_signatures: Vec<String>,
@@ -63,12 +68,12 @@ impl std::fmt::Debug for EmailMessage {
 }
 
 impl EmailMessage {
-    pub fn parse_imap(f: &Fetch, body_bytes: &[u8]) -> Result<Self, InvalidEmail> {
-        parse_any(body_bytes, Some(f))
+    pub fn parse_imap(body_bytes: &[u8]) -> Result<Self, InvalidEmail> {
+        parse_any(body_bytes)
     }
 
     pub fn parse_rest_api(body_bytes: &[u8]) -> Result<Self, InvalidEmail> {
-        parse_any(body_bytes, None)
+        parse_any(body_bytes)
     }
 
     /// Parse the raw email bytes and return a ParsedMail
@@ -117,24 +122,88 @@ impl EmailMessage {
     }
 
     pub fn event_id_salt(&self) -> Result<Vec<u8>, InvalidEmail> {
-        let unique_id = self
-            .message_id()
-            .or_else(|| self.date())
-            .ok_or(InvalidEmail::IdentityMissing)?;
-
-        let subject = self.subject.as_ref().ok_or(InvalidEmail::SubjectMissing)?;
-
+        let identity = if self.message_id().is_some() {
+            "message-id"
+        } else if self.date().is_some() {
+            "date"
+        } else {
+            return Err(InvalidEmail::IdentityMissing);
+        };
+        if self.subject.is_none() {
+            return Err(InvalidEmail::SubjectMissing);
+        }
+        let parsed = parse_mail(&self.raw_bytes).map_err(|_| InvalidEmail::ParseFailed)?;
         let mut hasher = Sha256::new();
-
-        hasher.update(unique_id);
-        hasher.update(&self.original_sender);
-        hasher.update(subject);
+        for name in [identity, "from", "subject"] {
+            let header = parsed
+                .headers
+                .iter()
+                .find(|h| h.get_key_ref().eq_ignore_ascii_case(name))
+                .ok_or(InvalidEmail::AuthenticationFailed)?;
+            // RFC 6376 relaxed header canonicalization permits these whitespace
+            // changes without invalidating a signature. They must not change ID.
+            hasher.update(name);
+            hasher.update(":");
+            hasher.update(canonical_header_value(header.get_value_raw()));
+            hasher.update("\r\n");
+        }
 
         Ok(hasher.finalize().to_vec())
     }
 }
 
-fn parse_any(body_bytes: &[u8], f: Option<&Fetch>) -> Result<EmailMessage, InvalidEmail> {
+// Matches cfdkim's private canonicalize_header_value_relaxed helper: remove
+// CRLF, trim spaces/tabs, and collapse runs of spaces/tabs to a single space.
+// Reference at the dependency commit currently recorded in Cargo.lock:
+// https://github.com/Lay3rLabs/dkim-wasi/blob/326485409a0a7fe407c2892fb66bdbfe2a243088/src/canonicalization.rs#L104-L131
+fn canonical_header_value(value: &[u8]) -> Vec<u8> {
+    let mut value = value.to_vec();
+
+    // Replace tabs with spaces (cfdkim's private bytes::replace helper).
+    for byte in &mut value {
+        if *byte == b'\t' {
+            *byte = b' ';
+        }
+    }
+
+    // Remove CRLF to unfold headers (its private bytes::replace_slice helper).
+    let mut i = 0;
+    while i + 2 <= value.len() {
+        if value[i..].starts_with(b"\r\n") {
+            value.drain(i..i + 2);
+        } else {
+            i += 1;
+        }
+    }
+
+    // Trim trailing and leading spaces.
+    while value.ends_with(b" ") {
+        value.remove(value.len() - 1);
+    }
+    while value.starts_with(b" ") {
+        value.remove(0);
+    }
+
+    // Collapse consecutive spaces into one, preserving all other bytes.
+    let mut previous = false;
+    value.retain(|c| {
+        if *c == b' ' {
+            if previous {
+                false
+            } else {
+                previous = true;
+                true
+            }
+        } else {
+            previous = false;
+            true
+        }
+    });
+
+    value
+}
+
+fn parse_any(body_bytes: &[u8]) -> Result<EmailMessage, InvalidEmail> {
     let msg = parse_mail(body_bytes).map_err(|_| InvalidEmail::ParseFailed)?;
 
     let subject = msg
@@ -143,33 +212,19 @@ fn parse_any(body_bytes: &[u8], f: Option<&Fetch>) -> Result<EmailMessage, Inval
         .find(|h| h.get_key().eq_ignore_ascii_case("Subject"))
         .map(|h| h.get_value());
 
-    // best effort original sender extraction
-    let original_sender = msg
+    // DKIM authenticates From, not Sender, Resent-From, or the IMAP envelope.
+    let mut senders = msg
         .headers
         .iter()
-        .find(|h| {
-            h.get_key().eq_ignore_ascii_case("Resent-From")
-                || h.get_key().eq_ignore_ascii_case("From")
-                || h.get_key().eq_ignore_ascii_case("Sender")
-        })
+        .filter(|h| h.get_key_ref().eq_ignore_ascii_case("From"));
+    let original_sender = senders
+        .next()
         .map(|h| h.get_value())
-        .or_else(|| {
-            f.and_then(|f| {
-                f.envelope()
-                    .and_then(|env| {
-                        env.from.as_ref().map(|addrs| {
-                            addrs
-                                .first()
-                                .map(|a| a.mailbox.map(|s| String::from_utf8(s.to_vec()).ok()))
-                        })
-                    })
-                    .flatten()
-                    .flatten()
-                    .flatten()
-            })
-        })
         .filter(|sender| !sender.trim().is_empty())
         .ok_or(InvalidEmail::SenderMissing)?;
+    if senders.next().is_some() {
+        return Err(InvalidEmail::SenderAmbiguous);
+    }
 
     // there can be multiple signatures
     let dkim_signatures = msg

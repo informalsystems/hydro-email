@@ -58,18 +58,30 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                     anyhow::anyhow!("SERVICE_HANDLER_CONTRACT_ADDRESS config var is required")
                 })?;
             let backend = app_component_backend_client::BackendClient::from_env()?;
-            let prepared = fetched
-                .message
-                .as_ref()
-                .map_err(|reason| *reason)
-                .and_then(|email| {
-                    email.sender_domain()?;
-                    email.validate_subject()?;
-                    Ok((email, email.event_id_salt()?))
-                });
+            let prepared = async {
+                // Expired retries use the same confirmed-rejection path below.
+                // Do not execute an instruction that exceeded its retry window.
+                if fetched
+                    .cache
+                    .verification_expired(fetched.id)
+                    .map_err(error::AppError::EmailCache)?
+                {
+                    return Err(email::parser::InvalidEmail::VerificationExpired.into());
+                }
+                let email = fetched
+                    .message
+                    .as_ref()
+                    .map_err(|reason| error::AppError::InvalidEmail(*reason))?;
+                email.sender_domain()?;
+                email.validate_subject()?;
+                let salt = email.event_id_salt()?;
+                verify_email(email).await?;
+                Ok::<_, error::AppError>((email, salt))
+            }
+            .await;
             let (email, event_id_salt) = match prepared {
                 Ok(prepared) => prepared,
-                Err(reason) => {
+                Err(error::AppError::InvalidEmail(reason)) => {
                     backend::reject(
                         &backend,
                         &chain,
@@ -81,8 +93,16 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                     .await?;
                     return Ok(Vec::new());
                 }
+                Err(error::AppError::VerificationUnavailable) => {
+                    fetched
+                        .cache
+                        .defer(fetched.id)
+                        .map_err(error::AppError::EmailCache)?;
+                    eprintln!("email_verification_unavailable: retry scheduled");
+                    return Ok(Vec::new());
+                }
+                Err(error) => return Err(error.into()),
             };
-            verify_email(email).await?;
             let payload = CustomExecuteMsg::Email(UserIdEmail {
                 from: UserId::new_email_address(&email.original_sender),
                 subject: email.subject.clone().unwrap_or_default(),

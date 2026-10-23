@@ -44,6 +44,9 @@ futures = { workspace = true }
 imap = { workspace = true, default-features = false }
 mailparse = { workspace = true }
 cfdkim = { workspace = true}
+rsa = "0.9"
+simple-dns = "0.11"
+ed25519-dalek = "2"
 
 # Hashing
 sha2 = { workspace = true }

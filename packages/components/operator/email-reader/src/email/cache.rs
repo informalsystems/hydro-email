@@ -1,4 +1,7 @@
-use std::collections::{BTreeSet, HashSet};
+use std::{
+    collections::{BTreeMap, HashSet},
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{anyhow, ensure, Result};
 use sha2::{Digest, Sha256};
@@ -37,7 +40,11 @@ impl MessageId {
 
 pub trait CacheStore {
     fn keys(&self) -> Result<Vec<String>>;
-    fn remember(&self, key: &str) -> Result<()>;
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>>;
+    fn set(&self, key: &str, value: &[u8]) -> Result<()>;
+    fn remember(&self, key: &str) -> Result<()> {
+        self.set(key, &[])
+    }
     fn remove(&self, key: &str) -> Result<()>;
 }
 
@@ -60,9 +67,15 @@ impl CacheStore for WavsStore {
         }
     }
 
-    fn remember(&self, key: &str) -> Result<()> {
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
         self.0
-            .set(key, &[])
+            .get(key)
+            .map_err(|e| anyhow!("Email cache lookup failed: {e:?}"))
+    }
+
+    fn set(&self, key: &str, value: &[u8]) -> Result<()> {
+        self.0
+            .set(key, value)
             .map_err(|e| anyhow!("Email cache write failed: {e:?}"))
     }
 
@@ -75,7 +88,22 @@ impl CacheStore for WavsStore {
 
 pub struct ProcessedEmails<S = WavsStore> {
     store: S,
-    snapshot: BTreeSet<MessageId>,
+    // Empty values mean handled; nonempty values hold a temporary retry schedule.
+    snapshot: BTreeMap<MessageId, Option<Retry>>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Retry {
+    attempts: u32,
+    first_failure_at: u64,
+    retry_after: u64,
+}
+
+const MAX_RETRY_AGE_SECONDS: u64 = 3600;
+const MAX_RETRY_DELAY_SECONDS: u64 = 300;
+
+fn now_seconds() -> Result<u64> {
+    Ok(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
 }
 
 fn bucket_name(config: &ImapConfig) -> Result<String> {
@@ -104,11 +132,18 @@ impl ProcessedEmails {
 
 impl<S: CacheStore> ProcessedEmails<S> {
     pub(crate) fn load(store: S) -> Result<Self> {
-        let snapshot = store
-            .keys()?
-            .iter()
-            .map(|key| MessageId::parse(key))
-            .collect::<Result<_>>()?;
+        let mut snapshot = BTreeMap::new();
+        for key in store.keys()? {
+            // A concurrent execution may remove a key after it was listed.
+            if let Some(value) = store.get(&key)? {
+                let retry = if value.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::from_slice(&value)?)
+                };
+                snapshot.insert(MessageId::parse(&key)?, retry);
+            }
+        }
         Ok(Self { store, snapshot })
     }
 
@@ -119,8 +154,17 @@ impl<S: CacheStore> ProcessedEmails<S> {
         uid_validity: u32,
         unread: &HashSet<u32>,
     ) -> Result<Option<MessageId>> {
+        self.next_unread_at(uid_validity, unread, now_seconds()?)
+    }
+
+    fn next_unread_at(
+        &self,
+        uid_validity: u32,
+        unread: &HashSet<u32>,
+        now: u64,
+    ) -> Result<Option<MessageId>> {
         ensure!(uid_validity != 0, "Missing IMAP UIDVALIDITY");
-        for id in &self.snapshot {
+        for id in self.snapshot.keys() {
             if id.uid_validity != uid_validity || !unread.contains(&id.uid) {
                 self.store.remove(&id.key())?;
             }
@@ -129,12 +173,53 @@ impl<S: CacheStore> ProcessedEmails<S> {
             .iter()
             .copied()
             .map(|uid| MessageId { uid_validity, uid })
-            .filter(|id| !self.snapshot.contains(id))
+            .filter(|id| match self.snapshot.get(id) {
+                None => true,
+                Some(Some(retry)) => retry.retry_after <= now,
+                Some(None) => false,
+            })
             .min())
     }
 
     pub fn remember(&self, id: MessageId) -> Result<()> {
+        // Replacing retry metadata with an empty value ends retries after either
+        // successful processing or a confirmed permanent rejection.
         self.store.remember(&id.key())
+    }
+
+    pub fn defer(&self, id: MessageId) -> Result<()> {
+        self.defer_at(id, now_seconds()?)
+    }
+
+    pub fn verification_expired(&self, id: MessageId) -> Result<bool> {
+        Ok(self.verification_expired_at(id, now_seconds()?))
+    }
+
+    fn verification_expired_at(&self, id: MessageId, now: u64) -> bool {
+        self.snapshot
+            .get(&id)
+            .and_then(Option::as_ref)
+            .is_some_and(|retry| {
+                now >= retry.first_failure_at.saturating_add(MAX_RETRY_AGE_SECONDS)
+            })
+    }
+
+    fn defer_at(&self, id: MessageId, now: u64) -> Result<()> {
+        let previous = self.snapshot.get(&id).and_then(Option::as_ref);
+        let attempts = previous.map_or(1, |retry| retry.attempts.saturating_add(1));
+        // Preserve the original failure time across retries; later failures must
+        // not extend the one-hour deadline. Operator restarts reset this cache.
+        let first_failure_at = previous.map_or(now, |retry| retry.first_failure_at);
+        let deadline = first_failure_at.saturating_add(MAX_RETRY_AGE_SECONDS);
+        // Retry after 30s, 1m, 2m, etc., capped at 5m and never past expiry.
+        // Skip this UID until then, allowing newer mail to proceed while it stays unread.
+        let delay = (30_u64 << attempts.saturating_sub(1).min(4)).min(MAX_RETRY_DELAY_SECONDS);
+        let retry = Retry {
+            attempts,
+            first_failure_at,
+            retry_after: now.saturating_add(delay).min(deadline),
+        };
+        self.store.set(&id.key(), &serde_json::to_vec(&retry)?)
     }
 }
 
@@ -144,14 +229,17 @@ mod tests {
     use std::{cell::RefCell, rc::Rc};
 
     #[derive(Clone, Default)]
-    struct MemoryStore(Rc<RefCell<BTreeSet<String>>>);
+    struct MemoryStore(Rc<RefCell<BTreeMap<String, Vec<u8>>>>);
 
     impl CacheStore for MemoryStore {
         fn keys(&self) -> Result<Vec<String>> {
-            Ok(self.0.borrow().iter().cloned().collect())
+            Ok(self.0.borrow().keys().cloned().collect())
         }
-        fn remember(&self, key: &str) -> Result<()> {
-            self.0.borrow_mut().insert(key.into());
+        fn get(&self, key: &str) -> Result<Option<Vec<u8>>> {
+            Ok(self.0.borrow().get(key).cloned())
+        }
+        fn set(&self, key: &str, value: &[u8]) -> Result<()> {
+            self.0.borrow_mut().insert(key.into(), value.to_vec());
             Ok(())
         }
         fn remove(&self, key: &str) -> Result<()> {
@@ -265,6 +353,93 @@ mod tests {
             );
         }
         assert!(store.keys()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn deferred_mail_allows_newer_mail_and_retries_with_capped_backoff() -> Result<()> {
+        let store = MemoryStore::default();
+        let mut now = 1000;
+        for delay in [30, 60, 120, 240, 300, 300] {
+            let cache = ProcessedEmails::load(store.clone())?;
+            assert_eq!(
+                cache.next_unread_at(1, &unread(&[10, 11]), now)?,
+                Some(id(1, 10))
+            );
+            cache.defer_at(id(1, 10), now)?;
+            let cache = ProcessedEmails::load(store.clone())?;
+            assert_eq!(
+                cache.next_unread_at(1, &unread(&[10, 11]), now + delay - 1)?,
+                Some(id(1, 11))
+            );
+            assert_eq!(
+                cache.next_unread_at(1, &unread(&[10]), now + delay - 1)?,
+                None
+            );
+            now += delay;
+        }
+        // Success or a confirmed rejection replaces retry metadata with handled.
+        ProcessedEmails::load(store.clone())?.remember(id(1, 10))?;
+        assert_eq!(
+            ProcessedEmails::load(store)?.next_unread_at(1, &unread(&[10, 11]), now)?,
+            Some(id(1, 11))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn verification_expires_one_hour_after_first_failure() -> Result<()> {
+        let store = MemoryStore::default();
+        let message = id(1, 10);
+        let cache = ProcessedEmails::load(store.clone())?;
+        assert!(!cache.verification_expired_at(message, 1000));
+        cache.defer_at(message, 1000)?;
+
+        // A late retry must preserve the original deadline and become eligible
+        // for rejection at that deadline, rather than waiting another five minutes.
+        for now in [1030, 1090, 1210, 1450, 4500] {
+            ProcessedEmails::load(store.clone())?.defer_at(message, now)?;
+        }
+        let cache = ProcessedEmails::load(store.clone())?;
+        assert!(!cache.verification_expired_at(message, 4599));
+        assert_eq!(cache.next_unread_at(1, &unread(&[10]), 4599)?, None);
+        assert!(cache.verification_expired_at(message, 4600));
+        assert_eq!(
+            cache.next_unread_at(1, &unread(&[10]), 4600)?,
+            Some(message)
+        );
+        // Until the backend confirms rejection, expiry survives later polls.
+        assert!(ProcessedEmails::load(store.clone())?.verification_expired_at(message, 4700));
+        cache.remember(message)?;
+        assert_eq!(
+            ProcessedEmails::load(store)?.next_unread_at(1, &unread(&[10]), 4700)?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn retry_entries_are_cleaned_up_and_reset_with_operator_memory() -> Result<()> {
+        let store = MemoryStore::default();
+        ProcessedEmails::load(store.clone())?.defer_at(id(1, 10), 1000)?;
+        // Mail marked read elsewhere no longer needs a retry entry.
+        ProcessedEmails::load(store.clone())?.next_unread_at(1, &unread(&[]), 1001)?;
+        assert!(store.keys()?.is_empty());
+
+        ProcessedEmails::load(store.clone())?.defer_at(id(1, 10), 1000)?;
+        assert_eq!(
+            ProcessedEmails::load(store.clone())?.next_unread_at(2, &unread(&[10]), 1001)?,
+            Some(id(2, 10))
+        );
+        assert!(store.keys()?.is_empty());
+
+        ProcessedEmails::load(store.clone())?.defer_at(id(2, 10), 1000)?;
+        // A WAVS restart clears local memory, so unread mail is eligible again.
+        store.0.borrow_mut().clear();
+        assert_eq!(
+            ProcessedEmails::load(store)?.next_unread_at(2, &unread(&[10]), 1001)?,
+            Some(id(2, 10))
+        );
         Ok(())
     }
 
