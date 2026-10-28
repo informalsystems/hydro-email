@@ -40,6 +40,7 @@ overflow-checks = true
 
 [workspace.dependencies]
 # Local
+hydro-control-center-registry = {path = "hydro/contracts/inflow/control-center-registry", package = "control-center-registry", features = ["cosmwasm_compat"] }
 hydro-interface = {path = "hydro/packages/interface", package = "interface", features = ["cosmwasm_compat"] }
 hydro-proxy = {path = "hydro/contracts/inflow/proxy", package = "proxy", features = ["cosmwasm_compat"] }
 app-contract-api = { path = "packages/contracts/api" }

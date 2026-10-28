@@ -8,11 +8,19 @@ static SERVICE_HANDLER_CODE_ID: tokio::sync::OnceCell<u64> = tokio::sync::OnceCe
 static PROXY_CODE_ID: tokio::sync::OnceCell<u64> = tokio::sync::OnceCell::const_new();
 static USER_REGISTRY_CODE_ID: tokio::sync::OnceCell<u64> = tokio::sync::OnceCell::const_new();
 static CONTROL_CENTER_CODE_ID: tokio::sync::OnceCell<u64> = tokio::sync::OnceCell::const_new();
+static CONTROL_CENTER_REGISTRY_CODE_ID: tokio::sync::OnceCell<u64> =
+    tokio::sync::OnceCell::const_new();
 static VAULT_CODE_ID: tokio::sync::OnceCell<u64> = tokio::sync::OnceCell::const_new();
 
 pub struct CodeId {}
 
 impl CodeId {
+    pub async fn new_control_center_registry() -> u64 {
+        *CONTROL_CENTER_REGISTRY_CODE_ID
+            .get_or_init(|| upload(wasm_path("control-center-registry")))
+            .await
+    }
+
     #[instrument]
     pub async fn new_service_handler() -> u64 {
         *SERVICE_HANDLER_CODE_ID

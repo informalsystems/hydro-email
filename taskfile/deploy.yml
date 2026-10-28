@@ -37,6 +37,7 @@ tasks:
             sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_CODE_ID}}" | jq -r '.code_id'
           FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_INSTANTIATE}}"
       - task: local-control-center
+      - task: contract-instantiate-control-center-registry
       - task: proxy
       - echo ""
       - echo "✅ Deployment completed! Artifacts are in {{.PATH_DEPLOYMENTS}}"
@@ -67,9 +68,33 @@ tasks:
         --output-file {{.DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_INSTANTIATE}}
         --chain {{.CHAIN_KEY}}
 
+  contract-instantiate-control-center-registry:
+    desc: "Instantiate the shared registry with the initial control centers"
+    preconditions:
+      - sh: '[ "{{.DEPLOY_CHAIN_TARGET}}" = "local" ] || [ -n "{{.HYDRO_COMMITTEE_ADDRESS}}" ]'
+        msg: "Set HYDRO_COMMITTEE_ADDRESS before deploying the registry on a remote chain"
+    vars:
+      CODE_ID:
+        sh: jq -r '.code_id' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_CONTROL_CENTER_REGISTRY_CODE_ID}}"
+      CONTROL_CENTER_ADDRESS:
+        sh: |
+          if [ "{{.DEPLOY_CHAIN_TARGET}}" = "local" ]; then
+            jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_INSTANTIATE}}"
+          else
+            echo "{{.DEPLOY_CONTROL_CENTER_ADDRESS}}"
+          fi
+    cmds:
+      - >
+        task helper-exec -- instantiate-control-center-registry
+        --code-id {{.CODE_ID}}
+        {{if ne .CHAIN_KEY .LOCAL_CHAIN_KEY}}--admin {{.HYDRO_COMMITTEE_ADDRESS}}{{end}}
+        --control-centers {{.CONTROL_CENTER_ADDRESS}}
+        --output-file {{.DEPLOY_FILENAME_CONTRACT_CONTROL_CENTER_REGISTRY_INSTANTIATE}}
+        --chain {{.CHAIN_KEY}}
+
   proxy:
     internal: true
-    desc: "Instantiate a proxy using the local control center or configured remote addresses"
+    desc: "Instantiate a proxy using the shared control-center registry"
     cmds:
       - task: contract-instantiate-proxy
         vars:
@@ -77,13 +102,8 @@ tasks:
             sh: jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_INSTANTIATE}}"
           CODE_ID:
             sh: jq -r '.code_id' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_PROXY_CODE_ID}}"
-          CONTROL_CENTER_ADDRESS:
-            sh: |
-              if [ "{{.DEPLOY_CHAIN_TARGET}}" = "local" ]; then
-                jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_INSTANTIATE}}"
-              else
-                echo "{{.DEPLOY_CONTROL_CENTER_ADDRESS}}"
-              fi
+          CONTROL_CENTER_REGISTRY_ADDRESS:
+            sh: jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_CONTROL_CENTER_REGISTRY_INSTANTIATE}}"
           FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_PROXY_INSTANTIATE}}"
 
   user:
@@ -458,6 +478,10 @@ tasks:
           FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_PROXY_CODE_ID}}"
       - task: contract-upload
         vars:
+          CONTRACT: control-center-registry
+          FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_CONTROL_CENTER_REGISTRY_CODE_ID}}"
+      - task: contract-upload
+        vars:
           CONTRACT: user-registry
           FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_USER_REGISTRY_CODE_ID}}"
 
@@ -512,7 +536,7 @@ tasks:
   contract-instantiate-proxy:
     deps: [assert-account-exists]
     requires:
-      vars: [FILENAME, CODE_ID, ADMIN_ADDRESS, CONTROL_CENTER_ADDRESS]
+      vars: [FILENAME, CODE_ID, ADMIN_ADDRESS, CONTROL_CENTER_REGISTRY_ADDRESS]
     cmds:
       - echo "Instantiating Proxy contract..."
       - >
@@ -520,7 +544,7 @@ tasks:
         --output-file {{.FILENAME}}
         --code-id {{.CODE_ID}}
         --admins {{.ADMIN_ADDRESS}}
-        --control-centers {{.CONTROL_CENTER_ADDRESS}}
+        --control-center-registry {{.CONTROL_CENTER_REGISTRY_ADDRESS}}
         --chain {{.CHAIN_KEY}}
       - echo "🚀 Instantiated Proxy contract and saved info to {{.FILENAME}}"
 

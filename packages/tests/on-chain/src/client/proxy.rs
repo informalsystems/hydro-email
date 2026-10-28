@@ -31,12 +31,26 @@ impl ProxyClient {
         admins: Option<Vec<Address>>,
         control_centers: Vec<Address>,
     ) -> Self {
+        let (registry, _) = client
+            .contract_instantiate(
+                None,
+                CodeId::new_control_center_registry().await,
+                "Control Center Registry",
+                &hydro_control_center_registry::msg::InstantiateMsg {
+                    admin: client.addr.to_string(),
+                    control_centers: control_centers.iter().map(ToString::to_string).collect(),
+                },
+                vec![],
+                None,
+            )
+            .await
+            .unwrap();
         let msg = hydro_proxy::msg::InstantiateMsg {
             admins: match admins {
                 Some(admins) => admins.iter().map(|a| a.to_string()).collect(),
                 None => vec![client.addr.to_string()],
             },
-            control_centers: control_centers.iter().map(|a| a.to_string()).collect(),
+            control_center_registry: registry.to_string(),
         };
 
         let (address, _) = client

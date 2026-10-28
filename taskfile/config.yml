@@ -62,6 +62,8 @@ vars:
     sh: grep '^DEPLOY_IPFS_TARGET=' "$(git rev-parse --show-toplevel)/.env" | cut -d'=' -f2 | cut -d'#' -f1 | tr -d ' '
   DEPLOY_CONTROL_CENTER_ADDRESS:
     sh: grep '^DEPLOY_CONTROL_CENTER_ADDRESS=' "$(git rev-parse --show-toplevel)/.env" | cut -d'=' -f2 | cut -d'#' -f1
+  HYDRO_COMMITTEE_ADDRESS:
+    sh: grep '^HYDRO_COMMITTEE_ADDRESS=' "$(git rev-parse --show-toplevel)/.env" | cut -d'=' -f2 | cut -d'#' -f1 | tr -d '\" '
   TASK_HELPER_DEV_MODE:
     sh: grep '^TASK_HELPER_DEV_MODE=' "$(git rev-parse --show-toplevel)/.env" | cut -d'=' -f2 | cut -d'#' -f1 | tr -d ' '
 
@@ -136,6 +138,8 @@ vars:
   DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_INSTANTIATE: "contract-service-handler-instantiate.json"
   DEPLOY_FILENAME_CONTRACT_USER_REGISTRY_CODE_ID: "contract-user-registry-code-id.json"
   DEPLOY_FILENAME_CONTRACT_USER_REGISTRY_INSTANTIATE: "contract-user-registry-instantiate.json"
+  DEPLOY_FILENAME_CONTRACT_CONTROL_CENTER_REGISTRY_CODE_ID: "contract-control-center-registry-code-id.json"
+  DEPLOY_FILENAME_CONTRACT_CONTROL_CENTER_REGISTRY_INSTANTIATE: "contract-control-center-registry-instantiate.json"
   DEPLOY_FILENAME_CONTRACT_PROXY_CODE_ID: "contract-proxy-code-id.json"
   DEPLOY_FILENAME_CONTRACT_PROXY_INSTANTIATE: "contract-proxy-instantiate.json"
   DEPLOY_FILENAME_CONTRACT_LOCAL_CONTROL_CENTER_CODE_ID: "contract-local-control-center-code-id.json"

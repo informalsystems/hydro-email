@@ -50,10 +50,14 @@ task deploy:all
 ```
 
 For `DEPLOY_CHAIN_TARGET="local"`, deployment also builds and deploys Hydro's
-control center with an empty vault list, then points the proxy at its address.
+control center with an empty vault list, registers it in a new control-center
+registry, then points the proxy at that registry.
 This lets you test email recording and the proxy's `Forwarded` state without
 deploying vaults. It does not test deposits. The local flow ignores
-`DEPLOY_CONTROL_CENTER_ADDRESS`; remote deployments still use that setting.
+`DEPLOY_CONTROL_CENTER_ADDRESS` and uses the deployment wallet as registry admin.
+Remote deployments initialize the registry with `DEPLOY_CONTROL_CENTER_ADDRESS`
+and set its admin to `HYDRO_COMMITTEE_ADDRESS`. The committee can subsequently add
+or remove control centers in the registry without recreating proxies.
 
 5. Send an email to the operator email address
 

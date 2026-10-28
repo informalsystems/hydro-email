@@ -40,3 +40,11 @@ Easiest is just to set `WAVS_OPERATOR_SIGNING_MNEMONIC_1` and `REMOTE_WAVS_OPERA
 ```
 task deploy:operator
 ```
+
+## Hydro control-center registry
+
+Set `HYDRO_COMMITTEE_ADDRESS` in the deployment `.env` to the registry's application
+admin. `DEPLOY_CONTROL_CENTER_ADDRESS` remains the space-separated initial list
+of control centers on the target chain. Deployment uploads the registry alongside
+the proxy and instantiates it before creating the sample proxy. The registry has
+no chain-level migration admin; the committee controls its application settings.

@@ -599,6 +599,7 @@ dependencies = [
  "dotenvy",
  "email_address",
  "imap",
+ "interface",
  "layer-climb",
  "native-tls",
  "proxy",
@@ -1700,6 +1701,20 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-xid",
+]
+
+[[package]]
+name = "control-center-registry"
+version = "0.0.1"
+dependencies = [
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-storage-plus",
+ "cw2",
+ "interface",
+ "schemars 1.1.0",
+ "serde",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -4060,6 +4075,7 @@ dependencies = [
  "app-tests-common",
  "app-utils",
  "async-trait",
+ "control-center-registry",
  "cosmwasm-schema",
  "cosmwasm-std",
  "cw-multi-test",
@@ -4085,6 +4101,7 @@ dependencies = [
  "app-utils",
  "async-trait",
  "bip39",
+ "control-center-registry",
  "cosmwasm-schema",
  "cosmwasm-std",
  "deadpool",
@@ -6123,6 +6140,7 @@ dependencies = [
  "app-utils",
  "clap",
  "const-hex",
+ "control-center-registry",
  "cosmwasm-std",
  "dotenvy",
  "layer-climb",
