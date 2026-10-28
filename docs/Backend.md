@@ -47,9 +47,15 @@ read-only chain queries. To enable registration provisioning, configure:
 
 - `BACKEND_PROXY_CODE_ID`: existing uploaded Hydro proxy code ID.
 - `BACKEND_SERVICE_HANDLER_ADDRESS`: proxy application admin.
-- `BACKEND_CONTROL_CENTER_ADDRESSES`: space-separated configured control centers.
+- `BACKEND_CONTROL_CENTER_REGISTRY_ADDRESS`: deployed Hydro control-center registry address.
 - `BACKEND_SIGNING_MNEMONIC`: a funded signer authorized by the registry.
 - `BACKEND_PROVISIONING_ENABLED=true`.
+
+The proxy stores the registry address and queries its current control centers when
+executing. The registry's application admin can add or remove control centers
+without recreating proxies. Deployment initializes this admin from
+`HYDRO_COMMITTEE_ADDRESS` on remote chains; local development uses the deployment
+signer. The proxy's own application admin remains the service-handler contract.
 
 Enabling provisioning also processes existing queued jobs. Check the database
 queue before starting it against a live chain; these jobs can spend gas.

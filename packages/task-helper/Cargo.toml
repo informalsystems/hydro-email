@@ -11,6 +11,7 @@ app-contract-api = { workspace = true }
 app-utils = { workspace = true }
 app-client = { workspace = true, features = ["binary"] }
 hydro-proxy = { workspace = true }
+hydro-control-center-registry = { workspace = true }
 tokio = {workspace = true}
 clap = {workspace = true}
 dotenvy = {workspace = true}

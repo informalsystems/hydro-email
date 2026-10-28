@@ -18,6 +18,7 @@ email_address = "0.2"
 imap.workspace = true
 native-tls = "0.2"
 hydro-proxy.workspace = true
+hydro-interface.workspace = true
 layer-climb.workspace = true
 serde.workspace = true
 serde_json.workspace = true

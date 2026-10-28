@@ -113,9 +113,30 @@ impl ProxyClient {
             control_center_addr
         });
 
+        let registry = app_client.with_app_mut(|app| {
+            let code = ContractWrapper::new(
+                hydro_control_center_registry::contract::execute,
+                hydro_control_center_registry::contract::instantiate,
+                hydro_control_center_registry::contract::query,
+            );
+            let registry_code_id = app.store_code(Box::new(code));
+            app.instantiate_contract(
+                registry_code_id,
+                app_client.admin(),
+                &hydro_control_center_registry::msg::InstantiateMsg {
+                    admin: app_client.admin().to_string(),
+                    control_centers: vec![control_center_addr.to_string()],
+                },
+                &[],
+                "control_center_registry",
+                None,
+            )
+            .unwrap()
+        });
+
         let msg = hydro_proxy::msg::InstantiateMsg {
             admins: admins.into_iter().map(|x| x.to_string()).collect(),
-            control_centers: vec![control_center_addr.to_string()],
+            control_center_registry: registry.to_string(),
         };
 
         let address = app_client.with_app_mut(|app| {

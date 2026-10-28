@@ -17,6 +17,7 @@ app-contract-user-registry = { workspace = true}
 app-contract-api= { workspace = true}
 hydro-interface = { workspace = true }
 hydro-proxy = { workspace = true }
+hydro-control-center-registry = { workspace = true }
 wavs-types = { workspace = true }
 cw-multi-test = { workspace = true }
 cw-storage-plus = { workspace = true }

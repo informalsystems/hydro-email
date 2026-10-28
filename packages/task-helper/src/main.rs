@@ -285,9 +285,52 @@ async fn main() {
                 .await
                 .unwrap();
         }
+        CliCommand::InstantiateControlCenterRegistry {
+            args,
+            code_id,
+            admin,
+            control_centers,
+        } => {
+            let client = ctx.signing_client().await.unwrap();
+            let admin = match admin {
+                Some(admin) => admin,
+                None => {
+                    assert_eq!(
+                        ctx.chain_key().to_string(),
+                        "dev:local",
+                        "--admin is required on remote chains"
+                    );
+                    ctx.wallet_addr().await.unwrap().to_string()
+                }
+            };
+            let instantiate_msg = hydro_control_center_registry::msg::InstantiateMsg {
+                admin,
+                control_centers,
+            };
+            let (contract_addr, tx_resp) = client
+                .contract_instantiate(
+                    None,
+                    code_id,
+                    "Hydro Control Center Registry",
+                    &instantiate_msg,
+                    vec![],
+                    None,
+                )
+                .await
+                .unwrap();
+            println!("Instantiated Hydro control-center registry at address: {contract_addr}");
+            args.output()
+                .write(OutputContractInstantiate {
+                    kind: ContractKind::ControlCenterRegistry,
+                    address: contract_addr.to_string(),
+                    tx_hash: tx_resp.txhash,
+                })
+                .await
+                .unwrap();
+        }
         CliCommand::InstantiateProxy {
             admins,
-            control_centers,
+            control_center_registry,
             args,
             code_id,
         } => {
@@ -295,7 +338,7 @@ async fn main() {
 
             let instantiate_msg = hydro_proxy::msg::InstantiateMsg {
                 admins,
-                control_centers,
+                control_center_registry,
             };
 
             let (contract_addr, tx_resp) = client

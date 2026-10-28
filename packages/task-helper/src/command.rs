@@ -53,6 +53,21 @@ pub enum CliCommand {
         #[clap(flatten)]
         args: CliArgs,
     },
+    /// Instantiate the shared Hydro control-center registry
+    InstantiateControlCenterRegistry {
+        #[arg(long)]
+        code_id: u64,
+
+        #[arg(long)]
+        /// Required on remote chains; local development defaults to the signer.
+        admin: Option<String>,
+
+        #[arg(long, required = true, num_args = 1.., value_delimiter = ' ')]
+        control_centers: Vec<String>,
+
+        #[clap(flatten)]
+        args: CliArgs,
+    },
     /// Instantiate the Proxy contract
     InstantiateProxy {
         #[arg(long)]
@@ -61,8 +76,8 @@ pub enum CliCommand {
         #[arg(long, required = true, num_args = 1.., value_delimiter = ' ')]
         admins: Vec<String>,
 
-        #[arg(long, required = true, num_args = 1.., value_delimiter = ' ')]
-        control_centers: Vec<String>,
+        #[arg(long)]
+        control_center_registry: String,
 
         #[clap(flatten)]
         args: CliArgs,
@@ -268,6 +283,7 @@ pub enum ContractKind {
     Proxy,
     UserRegistry,
     LocalControlCenter,
+    ControlCenterRegistry,
 }
 
 impl std::fmt::Display for ContractKind {
@@ -283,6 +299,7 @@ impl ContractKind {
             Self::Proxy => "proxy",
             Self::UserRegistry => "user-registry",
             Self::LocalControlCenter => "local-control-center",
+            Self::ControlCenterRegistry => "control-center-registry",
         }
     }
     pub async fn wasm_bytes(&self) -> Vec<u8> {

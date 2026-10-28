@@ -16,7 +16,7 @@ pub struct Config {
     pub reconciliation_grace_seconds: u32,
     pub proxy_code_id: u64,
     pub service_handler_address: String,
-    pub control_centers: Vec<String>,
+    pub control_center_registry: String,
     pub signing_mnemonic: String,
 }
 
@@ -38,10 +38,7 @@ impl Config {
                 .parse()?,
             proxy_code_id: value("BACKEND_PROXY_CODE_ID", "0").parse()?,
             service_handler_address: required("BACKEND_SERVICE_HANDLER_ADDRESS")?,
-            control_centers: value("BACKEND_CONTROL_CENTER_ADDRESSES", "")
-                .split_whitespace()
-                .map(str::to_owned)
-                .collect(),
+            control_center_registry: value("BACKEND_CONTROL_CENTER_REGISTRY_ADDRESS", ""),
             signing_mnemonic: value("BACKEND_SIGNING_MNEMONIC", ""),
         };
         ensure!(
@@ -62,8 +59,8 @@ impl Config {
                 "BACKEND_PROXY_CODE_ID is required for provisioning"
             );
             ensure!(
-                !config.control_centers.is_empty(),
-                "BACKEND_CONTROL_CENTER_ADDRESSES is required for provisioning"
+                !config.control_center_registry.trim().is_empty(),
+                "BACKEND_CONTROL_CENTER_REGISTRY_ADDRESS is required for provisioning"
             );
             ensure!(
                 !config.signing_mnemonic.is_empty(),

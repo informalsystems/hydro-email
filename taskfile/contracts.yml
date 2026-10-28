@@ -34,6 +34,7 @@ tasks:
         vars:
           CONTRACT: "{{.ITEM}}"
       - task: build-proxy
+      - task: build-control-center-registry
 
   build:
     requires:
@@ -84,6 +85,18 @@ tasks:
       - |
         {{.DOCKER_SUDO}} rm -rf "./artifacts/{{.FILENAME_SRC}}" || true
       - echo "Built contract at {{.PATH_CONTRACT_BUILDS}}/{{.FILENAME_DEST}}"
+
+  build-control-center-registry:
+    desc: "Build Hydro's shared control-center registry"
+    cmds:
+      - >
+        {{.DOCKER_SUDO}} docker run --rm
+        -v "{{.PATH_REPO_ROOT}}/hydro:/code"
+        --mount type=volume,source="{{.CW_OPTIMIZER_CACHE}}_hydro_cache",target=/target
+        --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry
+        {{.DOCKER_IMAGE_COSMWASM_OPTIMIZER}} "contracts/inflow/control-center-registry"
+      - mkdir -p "{{.PATH_CONTRACT_BUILDS}}"
+      - cp "{{.PATH_REPO_ROOT}}/hydro/artifacts/control_center_registry.wasm" "{{.PATH_CONTRACT_BUILDS}}/app_contract_control_center_registry.wasm"
 
   build-local-control-center:
     desc: "Build Hydro's control center for the local email flow"

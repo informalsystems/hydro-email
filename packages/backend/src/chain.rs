@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, time::Duration};
+use std::time::Duration;
 
 use anyhow::{ensure, Result};
 use app_contract_api::user_registry::msg::{ExecuteMsg, ProxyAddressResponse, QueryMsg, UserId};
@@ -40,7 +40,7 @@ pub struct CosmosChain {
     registry: Address,
     code_id: u64,
     service_handler: String,
-    control_centers: Vec<String>,
+    control_center_registry: String,
 }
 
 impl CosmosChain {
@@ -62,12 +62,25 @@ impl CosmosChain {
             .querier
             .contract_code_info(config.proxy_code_id)
             .await?;
-        for address in
-            std::iter::once(&config.service_handler_address).chain(&config.control_centers)
-        {
+        for address in [
+            &config.service_handler_address,
+            &config.control_center_registry,
+        ] {
             let address = client.querier.chain_config.parse_address(address)?;
             client.querier.contract_info(&address).await?;
         }
+        // Fail startup if the configured address is not a control-center registry.
+        let center_registry = client
+            .querier
+            .chain_config
+            .parse_address(&config.control_center_registry)?;
+        let _: hydro_interface::inflow_control_center_registry::ControlCentersResponse = client
+            .querier
+            .contract_smart(
+                &center_registry,
+                &hydro_interface::inflow_control_center_registry::QueryMsg::ControlCenters {},
+            )
+            .await?;
         // The current registry has no admin query. Simulating a registration
         // checks signer authorization before we pay to create any proxy. Simulation
         // does not broadcast or commit the temporary registry write.
@@ -102,7 +115,7 @@ impl CosmosChain {
             registry,
             code_id: config.proxy_code_id,
             service_handler: config.service_handler_address.clone(),
-            control_centers: config.control_centers.clone(),
+            control_center_registry: config.control_center_registry.clone(),
         })
     }
 
@@ -191,15 +204,10 @@ impl RegistrationChain for CosmosChain {
             .iter()
             .map(ToString::to_string)
             .collect();
-        let centers: BTreeSet<_> = response
-            .config
-            .control_centers
-            .iter()
-            .map(ToString::to_string)
-            .collect();
-        let expected_centers: BTreeSet<_> = self.control_centers.iter().cloned().collect();
         Ok(
-            if admins == vec![self.service_handler.clone()] && centers == expected_centers {
+            if admins == vec![self.service_handler.clone()]
+                && response.config.control_center_registry.as_str() == self.control_center_registry
+            {
                 ProxyState::Ready
             } else {
                 ProxyState::Invalid
@@ -210,7 +218,7 @@ impl RegistrationChain for CosmosChain {
     async fn create_proxy(&self, user_id: &str) -> Result<Broadcast> {
         let msg = hydro_proxy::msg::InstantiateMsg {
             admins: vec![self.service_handler.clone()],
-            control_centers: self.control_centers.clone(),
+            control_center_registry: self.control_center_registry.clone(),
         };
         let message = self.client.contract_instantiate2_msg(
             None,
@@ -295,7 +303,7 @@ mod tests {
         let code_id = app.store_code(Box::new(code));
         let msg = hydro_proxy::msg::InstantiateMsg {
             admins: vec![handler.to_string()],
-            control_centers: vec![center.to_string()],
+            control_center_registry: center.to_string(),
         };
         let id = UserId::new_email_address("alice@example.com");
         let salt = proxy_salt(id.as_str()).unwrap();
@@ -317,6 +325,12 @@ mod tests {
             )
             .unwrap();
         assert_eq!(proxy, expected);
+        let config: hydro_proxy::msg::ConfigResponse = app
+            .wrap()
+            .query_wasm_smart(&proxy, &hydro_proxy::msg::QueryMsg::Config {})
+            .unwrap();
+        assert_eq!(config.config.control_center_registry, center);
+        assert_eq!(config.config.admins, vec![handler]);
         assert!(app
             .instantiate2_contract(code_id, creator.clone(), &msg, &[], "Proxy", None, salt)
             .is_err());
