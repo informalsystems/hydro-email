@@ -43,8 +43,6 @@ tasks:
       - |
         {{.DOCKER_SUDO}} docker pull {{.DOCKER_IMAGE_WAVS}}
       - |
-        {{.DOCKER_SUDO}} docker pull {{.DOCKER_IMAGE_WAVS_CW_MIDDLEWARE}}
-      - |
         {{.DOCKER_SUDO}} docker pull {{.DOCKER_IMAGE_COSMWASM_OPTIMIZER}}
       - |
         {{.DOCKER_SUDO}} docker pull {{.DOCKER_IMAGE_JAEGER}}

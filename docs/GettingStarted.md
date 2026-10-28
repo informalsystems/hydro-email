@@ -35,7 +35,7 @@ task backend:start-all
 task deploy:tap-faucet-all
 ```
 
-4. Deploy everything
+4. Prepare deployment and initialize its admins
 
 See [Remote](./Remote.md) for more details if deploying remotely
 
@@ -48,6 +48,20 @@ task deploy:all
 # 
 # task deploy:all SKIP_UPLOAD_CONTRACTS=true SKIP_UPLOAD_COMPONENTS=true SKIP_UPLOAD_MIDDLEWARE=true
 ```
+
+Set `HYDRO_COMMITTEE_ADDRESS` (the final owner of both middleware contracts) and
+`DEPLOY_USER_REGISTRY_ADMIN_ADDRESS` in `.env`. Use valid target-chain addresses,
+including local development. `deploy:all` deploys the contracts, configures
+URI/quorum, loads operators, and registers their keys/weights using `CLI_MNEMONIC`.
+It then verifies setup and atomically transfers both middleware authorities to
+the committee. No committee transaction or additional admin mnemonic is needed
+for bootstrap. Pass the desired operator count, for example `OPERATORS=2`.
+
+Normal users register through the API using its dedicated wallet. The optional
+`task deploy:user` prepares a sample registration request; `BROADCAST=true` uses
+`BACKEND_SIGNING_MNEMONIC` for that task only. Infrastructure deployment does not
+require the API's private mnemonic. See [Remote](./Remote.md) for individual
+stages, ownership handoff, and later committee administration.
 
 For `DEPLOY_CHAIN_TARGET="local"`, deployment also builds and deploys Hydro's
 control center with an empty vault list, registers it in a new control-center

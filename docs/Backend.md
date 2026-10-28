@@ -60,8 +60,10 @@ signer. The proxy's own application admin remains the service-handler contract.
 Enabling provisioning also processes existing queued jobs. Check the database
 queue before starting it against a live chain; these jobs can spend gas.
 
-The current registry sets its admins at instantiation and exposes no admin update
-method. A new wallet is not automatically authorized. The worker checks contracts
+Deployment sets the registry's sole admin from
+`DEPLOY_USER_REGISTRY_ADMIN_ADDRESS`; use the public address matching this API's
+`BACKEND_SIGNING_MNEMONIC`. Deployment does not need that mnemonic. The registry
+sets its admins at instantiation and exposes no admin update method. A new wallet is not automatically authorized. The worker checks contracts
 exist and simulates a registration at startup to verify permission before spending
 gas on a proxy. Simulation does not broadcast or write chain state.
 

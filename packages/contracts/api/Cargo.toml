@@ -21,3 +21,4 @@ cw-storage-plus = {workspace = true}
 sha2 = {workspace = true}
 const-hex = {workspace = true}
 mailparse = {workspace = true}
+layer-climb-address = { workspace = true }

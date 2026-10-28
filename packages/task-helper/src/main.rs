@@ -1,3 +1,4 @@
+mod admin;
 mod command;
 mod config;
 mod context;
@@ -6,7 +7,6 @@ mod output;
 
 use std::process::exit;
 
-use app_client::contracts::user_registry::UserRegistryContract;
 use app_contract_api::user_registry::msg::UserId;
 use app_utils::{faucet, tracing::tracing_init};
 use cosmwasm_std::Uint256;
@@ -24,8 +24,7 @@ use crate::{
     context::CliContext,
     ipfs::IpfsFile,
     output::{
-        OutputComponentUpload, OutputContractInstantiate, OutputContractUpload,
-        OutputOperatorSetSigningKey, OutputServiceUpload,
+        OutputComponentUpload, OutputContractInstantiate, OutputContractUpload, OutputServiceUpload,
     },
 };
 
@@ -39,13 +38,138 @@ async fn main() {
     let ctx = CliContext::new().await;
 
     match ctx.command.clone() {
+        CliCommand::InstantiateMiddleware {
+            manager_code_id,
+            registry_code_id,
+            committee_address,
+            args,
+        } => {
+            let client = ctx.signing_client().await.unwrap();
+
+            let owner = ctx
+                .parse_address(&committee_address)
+                .await
+                .unwrap()
+                .to_string();
+            let msg = app_contract_api::stake_registry::InstantiateMsg {
+                owner: client.addr.to_string(),
+                service_manager_instantiate: admin::manager_instantiate(
+                    manager_code_id,
+                    client.addr.to_string(),
+                ),
+            };
+            let (registry, response) = client
+                .contract_instantiate(
+                    None,
+                    registry_code_id,
+                    "Hydro Email Stake Registry",
+                    &msg,
+                    vec![],
+                    None,
+                )
+                .await
+                .unwrap();
+            let manager: String = client
+                .querier
+                .contract_smart(
+                    &registry,
+                    &app_contract_api::stake_registry::QueryMsg::GetServiceManager {},
+                )
+                .await
+                .unwrap();
+            println!("Stake registry: {registry}\nService manager: {manager}");
+            args.output()
+                .write(serde_json::json!({
+                    "contract_kind": "mirror_stake",
+                    "registry_address": registry.to_string(),
+                    "committee_address": owner,
+                    "bootstrap_admin": client.addr.to_string(),
+                    "service_manager_address": manager,
+                    "tx_hash": response.txhash,
+                }))
+                .await
+                .unwrap();
+        }
+        CliCommand::ConfigureMiddleware {
+            address,
+            uri,
+            numerator,
+            denominator,
+            ..
+        } => {
+            admin::configure_middleware(&ctx, &address, &uri, &numerator, &denominator)
+                .await
+                .unwrap();
+        }
+        CliCommand::FinalizeMiddleware {
+            address,
+            registry_address,
+            uri,
+            committee_address,
+            numerator,
+            denominator,
+            operator_files,
+            ..
+        } => {
+            admin::finalize_middleware(
+                &ctx,
+                &address,
+                &registry_address,
+                &uri,
+                &committee_address,
+                &numerator,
+                &denominator,
+                &operator_files,
+            )
+            .await
+            .unwrap();
+        }
+        CliCommand::SetServiceUri {
+            address,
+            uri,
+            broadcast,
+            ..
+        } => {
+            admin::execute_or_prepare(
+                &ctx,
+                &address,
+                serde_json::json!({"wavs_set_service_uri": {"service_uri": uri}}),
+                broadcast,
+            )
+            .await
+            .unwrap();
+        }
+        CliCommand::SetQuorum {
+            address,
+            numerator,
+            denominator,
+            broadcast,
+            ..
+        } => {
+            let numerator: Uint256 = numerator.parse().expect("Invalid numerator");
+            let denominator: Uint256 = denominator.parse().expect("Invalid denominator");
+            assert!(
+                !numerator.is_zero() && !denominator.is_zero() && numerator <= denominator,
+                "Quorum must satisfy 0 < numerator <= denominator"
+            );
+            admin::execute_or_prepare(&ctx, &address,
+                serde_json::json!({"wavs_set_quorum_threshold": {"numerator": numerator, "denominator": denominator}}), broadcast,
+            ).await.unwrap();
+        }
+        CliCommand::VerifyServiceUri { address, uri, .. } => {
+            admin::verify_service_uri(&ctx, &address, &uri)
+                .await
+                .unwrap();
+            println!("Service URI confirmed on-chain");
+        }
         CliCommand::OperatorSetSigningKey {
             service_manager_address,
             evm_operator_address,
             stake_registry_address,
             weight,
+            broadcast,
             wavs_url,
-            args,
+            args: _,
         } => {
             let service_manager_address =
                 ctx.parse_address(&service_manager_address).await.unwrap();
@@ -73,8 +197,6 @@ async fn main() {
                 .await
                 .unwrap();
 
-            let client = ctx.signing_client().await.unwrap();
-
             // Parse EVM addresses
             let evm_operator_address: EvmAddr = evm_operator_address.parse().unwrap_or_else(|_| {
                 panic!("Invalid operator EVM address '{}'", evm_operator_address)
@@ -93,37 +215,21 @@ async fn main() {
                 .parse()
                 .unwrap_or_else(|e| panic!("Invalid weight '{}': {}", weight, e));
 
-            // Create the SetOperatorDetails message
-            // https://github.com/Lay3rLabs/cw-middleware/blob/abf177f139c0e960ab0bdfaa8bbe37c67ba6ce00/packages/contracts/mirror/api/src/stake_registry.rs
-            // TODO: move this to middleware docker cli
-            let set_operator_details_msg = serde_json::json!({
-                "set_operator_details": {
-                    "operator": evm_operator_address.to_string(),
-                    "signing_key": evm_signing_key_address.to_string(),
-                    "weight": weight_uint.to_string()
-                }
-            });
+            let set_operator_details_msg =
+                app_contract_api::stake_registry::ExecuteMsg::SetOperatorDetails {
+                    operator: evm_operator_address,
+                    signing_key: evm_signing_key_address,
+                    weight: weight_uint,
+                };
 
-            let tx_resp = client
-                .contract_execute(
-                    &stake_registry_address,
-                    &set_operator_details_msg,
-                    vec![],
-                    None,
-                )
-                .await
-                .unwrap();
-
-            let stake_registry_tx_hash = tx_resp.txhash;
-
-            args.output()
-                .write(OutputOperatorSetSigningKey {
-                    stake_registry_tx_hash,
-                    evm_operator_address,
-                    evm_signing_key_address,
-                })
-                .await
-                .unwrap();
+            admin::execute_or_prepare(
+                &ctx,
+                &stake_registry_address.to_string(),
+                serde_json::to_value(set_operator_details_msg).unwrap(),
+                broadcast,
+            )
+            .await
+            .unwrap();
         }
         CliCommand::AssertAccountExists { addr, args: _ } => {
             let client = ctx.query_client().await.unwrap();
@@ -219,11 +325,15 @@ async fn main() {
                 .await
                 .unwrap();
         }
-        CliCommand::InstantiateUserRegistry { args, code_id } => {
+        CliCommand::InstantiateUserRegistry {
+            args,
+            code_id,
+            admin,
+        } => {
             let client = ctx.signing_client().await.unwrap();
 
             let instantiate_msg = app_contract_api::user_registry::msg::InstantiateMsg {
-                admins: vec![ctx.wallet_addr().await.unwrap().to_string()],
+                admins: vec![ctx.parse_address(&admin).await.unwrap().to_string()],
             };
 
             let (contract_addr, tx_resp) = client
@@ -728,33 +838,22 @@ async fn main() {
             email_address,
             user_registry_address,
             proxy_address,
-            args: _,
+            broadcast,
+            ..
         } => {
-            let client = ctx.signing_client().await.unwrap();
-
-            let user_registry_address = ctx.parse_address(&user_registry_address).await.unwrap();
-
-            let proxy_address = ctx.parse_address(&proxy_address).await.unwrap();
-
-            let contract = UserRegistryContract::new(
-                client.querier.clone().into(),
-                client.into(),
-                user_registry_address.into(),
-            );
-
-            let user_id = UserId::new_email_address(&email_address);
-
-            let (tx_resp, user_id) = contract
-                .executor
-                .register_user_id(user_id, proxy_address.clone().into())
-                .await
-                .unwrap();
-
-            println!("Registered user");
-            println!("TX Hash: {}", tx_resp.unchecked_into_tx_response().txhash);
-            println!("Proxy address: {}", proxy_address);
-            println!("Email address: {}", email_address);
-            println!("User ID: {}", user_id);
+            let proxy = ctx.parse_address(&proxy_address).await.unwrap();
+            let msg = app_contract_api::user_registry::msg::ExecuteMsg::RegisterUser {
+                user_id: UserId::new_email_address(&email_address),
+                proxy_address: proxy.to_string(),
+            };
+            admin::register_or_prepare(
+                &ctx,
+                &user_registry_address,
+                serde_json::to_value(msg).unwrap(),
+                broadcast,
+            )
+            .await
+            .unwrap();
         }
     }
 }

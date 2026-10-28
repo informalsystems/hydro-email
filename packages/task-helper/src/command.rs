@@ -17,6 +17,83 @@ pub enum CliCommand {
         #[clap(flatten)]
         args: CliArgs,
     },
+    /// Instantiate the local stake registry and service manager
+    InstantiateMiddleware {
+        #[arg(long)]
+        manager_code_id: u64,
+        #[arg(long)]
+        registry_code_id: u64,
+        #[arg(long)]
+        committee_address: String,
+        #[clap(flatten)]
+        args: CliArgs,
+    },
+    /// Initialize the service URI and quorum using the deployment wallet
+    ConfigureMiddleware {
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        uri: String,
+        #[arg(long, default_value = "2")]
+        numerator: String,
+        #[arg(long, default_value = "3")]
+        denominator: String,
+        #[clap(flatten)]
+        args: CliArgs,
+    },
+    /// Verify setup and transfer both middleware authorities to the committee
+    FinalizeMiddleware {
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        registry_address: String,
+        #[arg(long)]
+        uri: String,
+        #[arg(long)]
+        committee_address: String,
+        #[arg(long, default_value = "2")]
+        numerator: String,
+        #[arg(long, default_value = "3")]
+        denominator: String,
+        /// Public operator requests written by operator-set-signing-key.
+        #[arg(long, required = true, num_args = 1..)]
+        operator_files: Vec<PathBuf>,
+        #[clap(flatten)]
+        args: CliArgs,
+    },
+    /// Prepare a service-manager URI transaction, or broadcast using CLI_MNEMONIC
+    SetServiceUri {
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        uri: String,
+        #[arg(long)]
+        broadcast: bool,
+        #[clap(flatten)]
+        args: CliArgs,
+    },
+    /// Prepare a quorum transaction, or broadcast using CLI_MNEMONIC
+    SetQuorum {
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        numerator: String,
+        #[arg(long)]
+        denominator: String,
+        #[arg(long)]
+        broadcast: bool,
+        #[clap(flatten)]
+        args: CliArgs,
+    },
+    /// Verify the on-chain service URI before loading the service on operators
+    VerifyServiceUri {
+        #[arg(long)]
+        address: String,
+        #[arg(long)]
+        uri: String,
+        #[clap(flatten)]
+        args: CliArgs,
+    },
     /// Instantiate the ServiceHandler contract
     InstantiateServiceHandler {
         #[arg(long)]
@@ -41,6 +118,9 @@ pub enum CliCommand {
     InstantiateUserRegistry {
         #[arg(long)]
         code_id: u64,
+
+        #[arg(long)]
+        admin: String,
 
         #[clap(flatten)]
         args: CliArgs,
@@ -189,6 +269,10 @@ pub enum CliCommand {
         #[arg(long)]
         wavs_url: Url,
 
+        /// Send using CLI_MNEMONIC; otherwise prepare an unsigned message.
+        #[arg(long)]
+        broadcast: bool,
+
         #[clap(flatten)]
         args: CliArgs,
     },
@@ -233,6 +317,10 @@ pub enum CliCommand {
 
         #[arg(long)]
         proxy_address: String,
+
+        /// Send using BACKEND_SIGNING_MNEMONIC; otherwise prepare an unsigned message.
+        #[arg(long)]
+        broadcast: bool,
 
         #[clap(flatten)]
         args: CliArgs,
@@ -280,6 +368,8 @@ pub struct CliArgs {
 #[serde(rename_all = "kebab-case")]
 pub enum ContractKind {
     ServiceHandler,
+    StakeRegistry,
+    ServiceManager,
     Proxy,
     UserRegistry,
     LocalControlCenter,
@@ -296,6 +386,8 @@ impl ContractKind {
     pub fn as_str(&self) -> &str {
         match self {
             Self::ServiceHandler => "service-handler",
+            Self::StakeRegistry => "stake-registry",
+            Self::ServiceManager => "service-manager",
             Self::Proxy => "proxy",
             Self::UserRegistry => "user-registry",
             Self::LocalControlCenter => "local-control-center",

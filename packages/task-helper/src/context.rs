@@ -28,6 +28,12 @@ impl CliContext {
     pub fn args(&self) -> &CliArgs {
         match &self.command {
             CliCommand::UploadContract { args, .. } => args,
+            CliCommand::InstantiateMiddleware { args, .. } => args,
+            CliCommand::ConfigureMiddleware { args, .. } => args,
+            CliCommand::FinalizeMiddleware { args, .. } => args,
+            CliCommand::SetServiceUri { args, .. } => args,
+            CliCommand::SetQuorum { args, .. } => args,
+            CliCommand::VerifyServiceUri { args, .. } => args,
             CliCommand::FaucetTap { args, .. } => args,
             CliCommand::InstantiateServiceHandler { args, .. } => args,
             CliCommand::InstantiateProxy { args, .. } => args,
@@ -92,9 +98,19 @@ impl CliContext {
     }
 
     pub async fn signing_client(&self) -> Result<SigningClient> {
+        self.signing_client_with_mnemonic(&self.client_mnemonic()?)
+            .await
+    }
+
+    pub async fn backend_signing_client(&self) -> Result<SigningClient> {
+        self.signing_client_with_mnemonic(&get_env_var("BACKEND_SIGNING_MNEMONIC")?)
+            .await
+    }
+
+    async fn signing_client_with_mnemonic(&self, mnemonic: &str) -> Result<SigningClient> {
         let query_client = self.query_client().await?;
 
-        let signer = KeySigner::new_mnemonic_str(&self.client_mnemonic()?, None)?;
+        let signer = KeySigner::new_mnemonic_str(mnemonic, None)?;
         let address = self
             .chain_config()
             .await?

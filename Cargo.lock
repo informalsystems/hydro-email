@@ -721,6 +721,7 @@ dependencies = [
  "cosmwasm-std",
  "cw-storage-macro",
  "cw-storage-plus",
+ "layer-climb-address",
  "mailparse",
  "serde",
  "sha2 0.10.9",
@@ -748,12 +749,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "app-contract-service-manager"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "app-contract-api",
+ "app-contract-stake-registry",
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-multi-test",
+ "cw-storage-plus",
+ "cw2",
+ "k256",
+ "layer-climb-address",
+ "serde_json",
+ "wavs-types",
+]
+
+[[package]]
+name = "app-contract-stake-registry"
+version = "0.0.1"
+dependencies = [
+ "alloy-primitives",
+ "app-contract-api",
+ "cosmwasm-schema",
+ "cosmwasm-std",
+ "cw-multi-test",
+ "cw-storage-plus",
+ "cw2",
+ "k256",
+ "layer-climb-address",
+ "serde_json",
+ "sha3",
+ "thiserror 2.0.21",
+ "wavs-types",
+]
+
+[[package]]
 name = "app-contract-user-registry"
 version = "0.0.1"
 dependencies = [
  "app-contract-api",
  "cosmwasm-schema",
  "cosmwasm-std",
+ "cw-multi-test",
  "cw-storage-plus",
  "cw2",
  "schemars 1.1.0",
