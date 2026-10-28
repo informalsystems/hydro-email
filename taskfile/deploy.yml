@@ -16,8 +16,12 @@ tasks:
   ###################################################################
 
   artifacts:
-    deps: [all-upload-contracts-and-middleware, components-upload-all]
+    preconditions:
+      - sh: '[ -n "{{.HYDRO_COMMITTEE_ADDRESS}}" ] && [ -n "{{.DEPLOY_USER_REGISTRY_ADMIN_ADDRESS}}" ]'
+        msg: "Set HYDRO_COMMITTEE_ADDRESS and DEPLOY_USER_REGISTRY_ADMIN_ADDRESS"
     cmds:
+      - task: all-upload-contracts-and-middleware
+      - task: components-upload-all
       - task: middleware-instantiate
         vars:
           MANAGER_CODE_ID:
@@ -25,7 +29,6 @@ tasks:
           REGISTRY_CODE_ID:
             sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_MIDDLEWARE_STAKE_REGISTRY_CODE_ID}}" | jq -r '.code_id'
           FILENAME: "{{.DEPLOY_FILENAME_MIDDLEWARE_INSTANTIATE}}"
-      - task: middleware-set-quorum
       - task: contract-instantiate-user-registry
         vars:
           CODE_ID:
@@ -40,7 +43,7 @@ tasks:
       - task: contract-instantiate-control-center-registry
       - task: proxy
       - echo ""
-      - echo "✅ Deployment completed! Artifacts are in {{.PATH_DEPLOYMENTS}}"
+      - echo "Deployment artifacts prepared in {{.PATH_DEPLOYMENTS}}"
       - echo ""
 
   local-control-center:
@@ -116,7 +119,7 @@ tasks:
         vars:
           ACTIVATE: "true"
       - echo ""
-      - echo "✅ Service Set!"
+      - echo "Service URI and quorum configured; CLI retains middleware authority until final handoff."
       - echo ""
 
   operator:
@@ -130,17 +133,18 @@ tasks:
           WEIGHT: "{{.WEIGHT | default .DEFAULT_MIDDLEWARE_SIGNER_WEIGHT}}"
           FILENAME: "{{.DEPLOY_FILENAME_MIDDLEWARE_SIGNING_KEY}}"
       - echo ""
-      - echo "✅ Operator registered!"
+      - echo "Operator loaded and signing key/voting weight registered using the CLI wallet."
       - echo ""
 
   all:
     cmds:
       - task: artifacts
       - task: service
-      - task: user
       - task: operator
+      - task: middleware-finalize
+      - echo "Middleware setup completed and both authorities transferred to the Hydro committee."
       - echo ""
-      - echo "✅ Deployment completed! Artifacts are in {{.PATH_DEPLOYMENTS}}"
+      - echo "Deployment artifacts prepared in {{.PATH_DEPLOYMENTS}}"
       - echo ""
       - task: post-deploy-all
 
@@ -176,7 +180,8 @@ tasks:
       - task: service-upload-and-set-uri
 
   service-upload-and-set-uri:
-    required:
+    desc: "Upload the service and initialize URI/quorum using the deployment wallet"
+    requires:
       vars: [ACTIVATE]
     cmds:
       - task: service-upload
@@ -187,12 +192,7 @@ tasks:
           PATH_COMPONENT_AGGREGATOR_SUBMITTER_CID: "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_COMPONENT_AGGREGATOR_SUBMITTER_CID}}"
           FILENAME: "{{.DEPLOY_FILENAME_SERVICE_CID}}"
           ACTIVATE: "{{.ACTIVATE}}"
-      - task: middleware-set-service-uri
-        vars:
-          ADDR:
-            sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_SERVICE_CID}}" | jq -r '.service.manager.cosmos.address'
-          URI:
-            sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_SERVICE_CID}}" | jq -r '.uri'
+      - task: middleware-configure
   service-upload:
     requires:
       vars:
@@ -240,77 +240,79 @@ tasks:
           FILENAME: "{{.DEPLOY_FILENAME_MIDDLEWARE_STAKE_REGISTRY_CODE_ID}}"
 
   middleware-upload-service-manager:
-    deps: [assert-account-exists]
     requires:
       vars: [FILENAME]
-    vars:
-      SKIP_UPLOAD_CONTRACTS: '{{ .SKIP_UPLOAD_CONTRACTS | default "false" }}'
-    status:
-      - '[ "{{.SKIP_UPLOAD_CONTRACTS}}" = "true" ]'
     cmds:
-      - echo "Uploading middleware service-manager contract..."
-      - mkdir -p "{{.PATH_DEPLOYMENTS}}"
-      - >
-        docker run --rm
-        --network host
-        -v "{{.PATH_WAVS_HOME}}":/wavs-home:ro
-        -v "{{.PATH_DEPLOYMENTS}}":/output
-        -e CHAIN_KEY="{{.CHAIN_KEY}}"
-        -e WAVS_HOME="/wavs-home"
-        -e CLI_MNEMONIC="{{.CLI_MNEMONIC}}"
-        {{.DOCKER_IMAGE_WAVS_CW_MIDDLEWARE}}
-        service-manager upload --contract-kind mirror
-        --output-path "/output/{{.FILENAME}}"
-      - echo "🚀 Uploaded middleware service-manager contract and saved info to {{.FILENAME}}"
+      - task: contract-upload
+        vars:
+          CONTRACT: service-manager
+          FILENAME: "{{.FILENAME}}"
 
   middleware-upload-stake-registry:
-    deps: [assert-account-exists]
     requires:
       vars: [FILENAME]
-    vars:
-      SKIP_UPLOAD_CONTRACTS: '{{ .SKIP_UPLOAD_CONTRACTS | default "false" }}'
-    status:
-      - '[ "{{.SKIP_UPLOAD_CONTRACTS}}" = "true" ]'
     cmds:
-      - echo "Uploading middleware stake-registry contract..."
-      - mkdir -p "{{.PATH_DEPLOYMENTS}}"
-      - >
-        docker run --rm
-        --network host
-        -v "{{.PATH_WAVS_HOME}}":/wavs-home:ro
-        -v "{{.PATH_DEPLOYMENTS}}":/output
-        -e CHAIN_KEY="{{.CHAIN_KEY}}"
-        -e WAVS_HOME="/wavs-home"
-        -e CLI_MNEMONIC="{{.CLI_MNEMONIC}}"
-        {{.DOCKER_IMAGE_WAVS_CW_MIDDLEWARE}}
-        registry upload --contract-kind mirror_stake
-        --output-path "/output/{{.FILENAME}}"
-      - echo "🚀 Uploaded middleware stake-registry contract and saved info to {{.FILENAME}}"
+      - task: contract-upload
+        vars:
+          CONTRACT: stake-registry
+          FILENAME: "{{.FILENAME}}"
 
   middleware-instantiate:
     deps: [assert-account-exists]
     requires:
-      vars: [MANAGER_CODE_ID, REGISTRY_CODE_ID, FILENAME]
-    vars:
-      THRESHOLD: "{{.THRESHOLD | default .DEFAULT_MIDDLEWARE_THRESHOLD}}"
-      STRATEGIES: "{{.STRATEGIES | default .DEFAULT_MIDDLEWARE_STRATEGIES}}"
+      vars: [MANAGER_CODE_ID, REGISTRY_CODE_ID, FILENAME, HYDRO_COMMITTEE_ADDRESS]
     cmds:
-      - echo "Instantiating middleware contracts..."
-      - mkdir -p "{{.PATH_DEPLOYMENTS}}"
       - >
-        docker run --rm
-        --network host
-        -v "{{.PATH_WAVS_HOME}}":/wavs-home:ro
-        -v "{{.PATH_DEPLOYMENTS}}":/output
-        -e CHAIN_KEY="{{.CHAIN_KEY}}"
-        -e WAVS_HOME="/wavs-home"
-        -e CLI_MNEMONIC="{{.CLI_MNEMONIC}}"
-        {{.DOCKER_IMAGE_WAVS_CW_MIDDLEWARE}}
-        registry instantiate-mirror-stake
-        --code-id {{.REGISTRY_CODE_ID}}
-        --service-manager-code-id {{.MANAGER_CODE_ID}}
-        --output-path "/output/{{.FILENAME}}"
-      - echo "🚀 Instantiated middleware contracts and saved info to {{.FILENAME}}"
+        task helper-exec -- instantiate-middleware
+        --manager-code-id {{.MANAGER_CODE_ID}}
+        --registry-code-id {{.REGISTRY_CODE_ID}}
+        --committee-address {{.HYDRO_COMMITTEE_ADDRESS}}
+        --output-file {{.FILENAME}}
+        --chain {{.CHAIN_KEY}}
+      - echo "Middleware instantiated with temporary CLI authority; final handoff follows service and operator setup."
+
+  middleware-configure:
+    desc: "Initialize URI/quorum using the CLI wallet while retaining bootstrap authority"
+    vars:
+      ADDR:
+        sh: jq -r '.service_manager_address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_MIDDLEWARE_INSTANTIATE}}"
+      URI:
+        sh: jq -r '.uri' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_SERVICE_CID}}"
+      NUMERATOR: "{{.QUORUM_NUMERATOR | default .DEFAULT_MIDDLEWARE_QUORUM_NUMERATOR}}"
+      DENOMINATOR: "{{.QUORUM_DENOMINATOR | default .DEFAULT_MIDDLEWARE_QUORUM_DENOMINATOR}}"
+    cmds:
+      - >
+        task helper-exec -- configure-middleware
+        --address "{{.ADDR}}" --uri "{{.URI}}"
+        --numerator "{{.NUMERATOR}}" --denominator "{{.DENOMINATOR}}"
+        --output-file middleware-configure.json --chain {{.CHAIN_KEY}}
+
+  middleware-finalize:
+    desc: "Verify URI/quorum/operators, then transfer both middleware authorities to the committee"
+    vars:
+      ADDR:
+        sh: jq -r '.service_manager_address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_MIDDLEWARE_INSTANTIATE}}"
+      URI:
+        sh: jq -r '.uri' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_SERVICE_CID}}"
+      NUMERATOR: "{{.QUORUM_NUMERATOR | default .DEFAULT_MIDDLEWARE_QUORUM_NUMERATOR}}"
+      DENOMINATOR: "{{.QUORUM_DENOMINATOR | default .DEFAULT_MIDDLEWARE_QUORUM_DENOMINATOR}}"
+      REGISTRY:
+        sh: jq -r '.registry_address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_MIDDLEWARE_INSTANTIATE}}"
+      COMMITTEE:
+        sh: jq -er '.committee_address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_MIDDLEWARE_INSTANTIATE}}"
+      OPERATOR_FILES:
+        sh: |
+          for operator_number in $(seq 1 {{.OPERATORS | default "1"}}); do
+            printf '"%s/%s-%s.json" ' "{{.PATH_DEPLOYMENTS}}" "{{trimSuffix ".json" .DEPLOY_FILENAME_MIDDLEWARE_SIGNING_KEY}}" "$operator_number"
+          done
+    cmds:
+      - >
+        task helper-exec -- finalize-middleware
+        --address "{{.ADDR}}" --registry-address "{{.REGISTRY}}" --uri "{{.URI}}"
+        --committee-address "{{.COMMITTEE}}"
+        --numerator "{{.NUMERATOR}}" --denominator "{{.DENOMINATOR}}"
+        --operator-files {{.OPERATOR_FILES}}
+        --output-file middleware-finalize.json --chain {{.CHAIN_KEY}}
 
   middleware-set-quorum:
     vars:
@@ -319,41 +321,37 @@ tasks:
       MIDDLEWARE_QUORUM_NUMERATOR: "{{.QUORUM_NUMERATOR | default .DEFAULT_MIDDLEWARE_QUORUM_NUMERATOR}}"
       MIDDLEWARE_QUORUM_DENOMINATOR: "{{.QUORUM_DENOMINATOR | default .DEFAULT_MIDDLEWARE_QUORUM_DENOMINATOR}}"
     cmds:
-      - echo "Setting middleware quorum threshold to {{.MIDDLEWARE_QUORUM_NUMERATOR}}/{{.MIDDLEWARE_QUORUM_DENOMINATOR}}..."
       - >
-        docker run --rm
-        --network host
-        -v "{{.PATH_WAVS_HOME}}":/wavs-home:ro
-        -v "{{.PATH_DEPLOYMENTS}}":/output
-        -e CHAIN_KEY="{{.CHAIN_KEY}}"
-        -e WAVS_HOME="/wavs-home"
-        -e CLI_MNEMONIC="{{.CLI_MNEMONIC}}"
-        {{.DOCKER_IMAGE_WAVS_CW_MIDDLEWARE}}
-        service-manager set-quorum-threshold
+        task helper-exec -- set-quorum
         --address "{{.SERVICE_MANAGER_ADDRESS}}"
         --numerator "{{.MIDDLEWARE_QUORUM_NUMERATOR}}"
         --denominator "{{.MIDDLEWARE_QUORUM_DENOMINATOR}}"
-      - echo "✅ Middleware quorum threshold set to {{.MIDDLEWARE_QUORUM_NUMERATOR}}/{{.MIDDLEWARE_QUORUM_DENOMINATOR}}."
+        --output-file middleware-set-quorum.json
+        --chain {{.CHAIN_KEY}}
+        {{if eq (.BROADCAST | default "false") "true"}}--broadcast{{end}}
 
   middleware-set-service-uri:
-    deps: [assert-account-exists]
     requires:
       vars: [ADDR, URI]
     cmds:
-      - echo "Setting Service URI on service-manager contract..."
       - >
-        docker run --rm
-        --network host
-        -v "{{.PATH_WAVS_HOME}}":/wavs-home:ro
-        -v "{{.PATH_DEPLOYMENTS}}":/output
-        -e CHAIN_KEY="{{.CHAIN_KEY}}"
-        -e WAVS_HOME="/wavs-home"
-        -e CLI_MNEMONIC="{{.CLI_MNEMONIC}}"
-        {{.DOCKER_IMAGE_WAVS_CW_MIDDLEWARE}}
-        service-manager set-service-uri
+        task helper-exec -- set-service-uri
         --address "{{.ADDR}}"
         --uri "{{.URI}}"
-      - echo "🚀 Set Service URI {{.URI}} on service-manager {{.ADDR}}"
+        --output-file middleware-set-service-uri.json
+        --chain {{.CHAIN_KEY}}
+        {{if eq (.BROADCAST | default "false") "true"}}--broadcast{{end}}
+
+  middleware-verify-service-uri:
+    vars:
+      ADDR:
+        sh: jq -r '.service_manager_address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_MIDDLEWARE_INSTANTIATE}}"
+      URI:
+        sh: jq -r '.uri' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_SERVICE_CID}}"
+    cmds:
+      - >
+        task helper-exec -- verify-service-uri
+        --address "{{.ADDR}}" --uri "{{.URI}}" --chain {{.CHAIN_KEY}}
 
   ###################################################################
   ################### MIDDLEWARE / STAKE REGISTRY #####################
@@ -372,7 +370,6 @@ tasks:
           FILENAME: "{{.FILENAME}}"
 
   middleware-operator-set-signing-key-*:
-    deps: [assert-account-exists]
     requires:
       vars: [WEIGHT, FILENAME]
     vars:
@@ -390,7 +387,7 @@ tasks:
       WAVS_URL:
         sh: task backend:get-wavs-url-{{.WAVS_INSTANCE}}
     cmds:
-      - echo "Setting signing key on service manager {{.SERVICE_MANAGER_ADDRESS}}..."
+      - echo "Setting signing key for service manager {{.SERVICE_MANAGER_ADDRESS}}..."
       - >
         task helper-exec -- operator-set-signing-key
         --output-file={{.FILENAME}}
@@ -400,7 +397,8 @@ tasks:
         --wavs-url={{.WAVS_URL}}
         --weight={{.WEIGHT}}
         --chain={{.CHAIN_KEY}}
-      - echo "🚀 Set signing key for operator {{.WAVS_INSTANCE}} and saved info to {{.FILENAME}}"
+        {{if eq (.BROADCAST | default "true") "true"}}--broadcast{{end}}
+      - echo "Signing-key transaction saved to {{.FILENAME}}"
 
   ###################################################################
   ##################### OPERATOR / SERVICE ##########################
@@ -423,6 +421,7 @@ tasks:
       WAVS_URL:
         sh: task backend:get-wavs-url-{{.WAVS_INSTANCE}}
     cmds:
+      - task: middleware-verify-service-uri
       - |
         echo "Adding service to operator {{.WAVS_INSTANCE}} at endpoint {{.WAVS_URL}}"
       - >
@@ -523,11 +522,12 @@ tasks:
   contract-instantiate-user-registry:
     deps: [assert-account-exists]
     requires:
-      vars: [FILENAME, CODE_ID]
+      vars: [FILENAME, CODE_ID, DEPLOY_USER_REGISTRY_ADMIN_ADDRESS]
     cmds:
       - echo "Instantiating User Registry contract..."
       - >
         task helper-exec -- instantiate-user-registry
+        --admin {{.DEPLOY_USER_REGISTRY_ADMIN_ADDRESS}}
         --output-file {{.FILENAME}}
         --code-id {{.CODE_ID}}
         --chain {{.CHAIN_KEY}}
@@ -549,7 +549,6 @@ tasks:
       - echo "🚀 Instantiated Proxy contract and saved info to {{.FILENAME}}"
 
   contract-register-user:
-    deps: [assert-account-exists]
     vars:
       EMAIL_ADDRESS: "{{.EMAIL_ADDRESS | default .DEPLOY_REGISTER_USER_EMAIL}}"
       USER_REGISTRY_ADDRESS:
@@ -564,7 +563,8 @@ tasks:
         --user-registry-address {{.USER_REGISTRY_ADDRESS}}
         --proxy-address {{.PROXY_ADDRESS}}
         --chain {{.CHAIN_KEY}}
-      - echo "🚀 Registered {{.EMAIL_ADDRESS}} on User Registry contract"
+        {{if eq (.BROADCAST | default "false") "true"}}--broadcast{{end}}
+      - echo "Prepared registration for {{.EMAIL_ADDRESS}} on User Registry contract"
 
   ###################################################################
   ######################## COMPONENTS ###############################

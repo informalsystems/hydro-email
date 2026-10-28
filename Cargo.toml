@@ -4,6 +4,8 @@ members = [
     "packages/contracts/api",
     "packages/contracts/service-handler",
     "packages/contracts/user-registry",
+    "packages/contracts/stake-registry",
+    "packages/contracts/service-manager",
     "packages/components/operator/email-reader",
     "packages/components/backend-client",
     "packages/components/aggregator/submitter",
@@ -40,6 +42,8 @@ overflow-checks = true
 
 [workspace.dependencies]
 # Local
+app-contract-service-manager = { path = "packages/contracts/service-manager" }
+app-contract-stake-registry = { path = "packages/contracts/stake-registry" }
 hydro-control-center-registry = {path = "hydro/contracts/inflow/control-center-registry", package = "control-center-registry", features = ["cosmwasm_compat"] }
 hydro-interface = {path = "hydro/packages/interface", package = "interface", features = ["cosmwasm_compat"] }
 hydro-proxy = {path = "hydro/contracts/inflow/proxy", package = "proxy", features = ["cosmwasm_compat"] }
@@ -127,6 +131,8 @@ zeroize = "1.8.2"
 cfg-if = "1.0.4"
 
 # hashing / cipher
+alloy-primitives = "=1.4.1"
+sha3 = "0.10.8"
 sha2 = "0.10.9"
 const-hex = "1.14.1"
 ripemd = "0.1.3"

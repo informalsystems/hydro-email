@@ -1,6 +1,5 @@
 use anyhow::Result;
 use clap::ValueEnum;
-use layer_climb::prelude::EvmAddr;
 use serde::{Deserialize, Serialize};
 use wavs_types::{ComponentDigest, ServiceDigest};
 
@@ -52,14 +51,6 @@ impl Output {
 
         Ok(())
     }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-#[serde(rename_all = "snake_case")]
-pub struct OutputOperatorSetSigningKey {
-    pub stake_registry_tx_hash: String,
-    pub evm_operator_address: EvmAddr,
-    pub evm_signing_key_address: EvmAddr,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

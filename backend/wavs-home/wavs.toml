@@ -21,9 +21,13 @@ gas_denom = "untrn"
 [wavs]
 dev_endpoints_enabled = true
 
-[wavs.p2p.remote]
-listen_port = 9000
-bootstrap_nodes = []
+#[wavs.p2p.remote]
+#listen_port = 9000
+#bootstrap_nodes = []
+
+[wavs.p2p.local]
+# Discover local operators through mDNS; choose separate ports automatically.
+listen_port = 0
 
 
 [cli]
