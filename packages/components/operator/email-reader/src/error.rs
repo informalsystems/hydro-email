@@ -42,6 +42,9 @@ pub enum AppError {
     #[error("Authorization: {0:?}")]
     Auth(anyhow::Error),
 
+    #[error("email_verification_unavailable")]
+    VerificationUnavailable,
+
     #[error("DKIM: {0:?}")]
     Dkim(#[from] cfdkim::DKIMError),
 

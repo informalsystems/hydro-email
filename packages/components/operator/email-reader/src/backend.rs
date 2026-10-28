@@ -216,7 +216,11 @@ mod tests {
             fn keys(&self) -> Result<Vec<String>> {
                 Ok(Vec::new())
             }
-            fn remember(&self, _: &str) -> Result<()> {
+            fn get(&self, _: &str) -> Result<Option<Vec<u8>>> {
+                panic!("Unexpected cache read")
+            }
+            fn set(&self, _: &str, value: &[u8]) -> Result<()> {
+                assert!(value.is_empty());
                 self.0.set(true);
                 Ok(())
             }
