@@ -1,6 +1,5 @@
 use std::sync::LazyLock;
 
-use anyhow::Result;
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::{AppError, AppResult};

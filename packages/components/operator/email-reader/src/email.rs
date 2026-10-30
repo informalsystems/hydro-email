@@ -4,11 +4,8 @@ pub(crate) mod parser;
 pub mod rest_api;
 pub mod verify;
 
-use futures::StreamExt;
-use thiserror::Error;
-
 use crate::{
-    config::{get_env_var, AgentMailRestApiConfig, ImapConfig, DEBUG},
+    config::{get_env_var, AgentMailRestApiConfig, ImapConfig},
     email::{imap::read_next_email_imap, parser::EmailMessage, rest_api::read_next_email_rest_api},
     error::{AppError, AppResult},
 };

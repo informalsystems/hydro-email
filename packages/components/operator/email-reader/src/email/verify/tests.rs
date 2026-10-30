@@ -7,6 +7,16 @@ const RAW: &str = "From: Alice <Alice@example.com>\r\nSubject: deposit\r\nMessag
 const HEADERS: &[&str] = &["From", "Subject", "Message-ID", "Date"];
 
 fn signature(raw: &str, domain: &str, selector: &str, headers: &[&str]) -> String {
+    signature_with_canonicalization(raw, domain, selector, headers, Type::Relaxed)
+}
+
+fn signature_with_canonicalization(
+    raw: &str,
+    domain: &str,
+    selector: &str,
+    headers: &[&str],
+    canonicalization: Type,
+) -> String {
     // Deterministic key used only for these tests, with no network or real mail.
     let logger = NullLoggerBuilder.build().unwrap();
     SignerBuilder::new()
@@ -16,7 +26,7 @@ fn signature(raw: &str, domain: &str, selector: &str, headers: &[&str]) -> Strin
         .with_selector(selector)
         .with_signing_domain(domain)
         .with_logger(&logger)
-        .with_header_canonicalization(Type::Relaxed)
+        .with_header_canonicalization(canonicalization)
         .build()
         .unwrap()
         .sign(&mailparse::parse_mail(raw.as_bytes()).unwrap())
@@ -54,7 +64,7 @@ impl Lookup for TestDns {
 }
 
 fn verify(raw: &str) -> AppResult<()> {
-    let email = EmailMessage::parse_rest_api(raw.as_bytes()).unwrap();
+    let email = EmailMessage::parse_imap(raw.as_bytes()).unwrap();
     futures::executor::block_on(verify_with_resolver(&email, Arc::new(TestDns)))
 }
 
@@ -66,8 +76,6 @@ fn assert_rejected(raw: &str) {
 fn accepts_real_signature_and_rejects_unsigned_wrong_domain_or_tampered_mail() {
     let valid = signed(RAW);
     verify(&valid).unwrap();
-    let quoted = RAW.replace("Alice <Alice@example.com>", "\"a  b\"@example.com");
-    assert_rejected(&signed(&quoted));
     assert_rejected(RAW);
     assert_rejected(&format!(
         "{}\r\n{RAW}",
@@ -84,6 +92,45 @@ fn accepts_real_signature_and_rejects_unsigned_wrong_domain_or_tampered_mail() {
     ] {
         assert_rejected(&tampered);
     }
+}
+
+#[test]
+fn whitespace_in_a_parsed_mailbox_is_rejected_only_with_relaxed_headers() {
+    let raw = RAW.replace("Alice <Alice@example.com>", "alice @example.com");
+    let relaxed = signed(&raw);
+    let email = EmailMessage::parse_imap(relaxed.as_bytes()).unwrap();
+    assert_eq!(email.sender_domain().unwrap(), "example.com");
+    let addresses = mailparse::addrparse(&email.original_sender).unwrap();
+    let [mailparse::MailAddr::Single(author)] = addresses.as_slice() else {
+        panic!("fixture must reach the single-mailbox guard");
+    };
+    assert_eq!(author.addr, "alice @example.com");
+
+    // The signature itself passes: our additional guard is what rejects it.
+    let parsed = email.dkim_view().unwrap();
+    let result = futures::executor::block_on(cfdkim::verify_email_with_resolver(
+        &NullLoggerBuilder.build().unwrap(),
+        "example.com",
+        &parsed,
+        Arc::new(TestDns),
+    ))
+    .unwrap();
+    assert_eq!(result.summary(), "pass");
+    let dns = Arc::new(CountingDns::default());
+    assert!(matches!(
+        futures::executor::block_on(verify_with_resolver(&email, dns.clone())),
+        Err(AppError::InvalidEmail(InvalidEmail::AuthenticationFailed))
+    ));
+    assert_eq!(dns.0.load(Ordering::Relaxed), 0);
+
+    // Simple headers preserve mailbox whitespace, so that signature is allowed.
+    let simple = format!(
+        "{}\r\n{raw}",
+        signature_with_canonicalization(&raw, "example.com", "test", HEADERS, Type::Simple)
+    );
+    verify(&simple).unwrap();
+    // Spaces in a display name do not change the mailbox identity.
+    verify(&signed(&RAW.replace("Alice <", "\"Alice Smith\" <"))).unwrap();
 }
 
 #[test]
@@ -122,16 +169,14 @@ fn author_identity_comes_only_from_one_from_header() {
         signed(RAW)
     );
     verify(&forwarded).unwrap();
-    let email = EmailMessage::parse_rest_api(forwarded.as_bytes()).unwrap();
+    let email = EmailMessage::parse_imap(forwarded.as_bytes()).unwrap();
     assert_eq!(email.original_sender, "Alice <Alice@example.com>");
     assert!(matches!(
-        EmailMessage::parse_rest_api(
-            format!("From: victim@example.com\r\n{}", signed(RAW)).as_bytes()
-        ),
+        EmailMessage::parse_imap(format!("From: victim@example.com\r\n{}", signed(RAW)).as_bytes()),
         Err(InvalidEmail::SenderAmbiguous)
     ));
     assert!(matches!(
-        EmailMessage::parse_rest_api(b"Sender: victim@example.com\r\nSubject: deposit\r\n\r\n"),
+        EmailMessage::parse_imap(b"Sender: victim@example.com\r\nSubject: deposit\r\n\r\n"),
         Err(InvalidEmail::SenderMissing)
     ));
 }
@@ -182,7 +227,7 @@ fn relaxed_header_whitespace_cannot_create_a_new_event_id() {
     verify(&valid).unwrap();
     verify(&changed).unwrap();
     let salt = |raw: &str| {
-        EmailMessage::parse_rest_api(raw.as_bytes())
+        EmailMessage::parse_imap(raw.as_bytes())
             .unwrap()
             .event_id_salt()
             .unwrap()

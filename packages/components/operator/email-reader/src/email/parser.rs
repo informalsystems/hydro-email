@@ -76,10 +76,6 @@ impl EmailMessage {
         parse_any(body_bytes)
     }
 
-    pub fn parse_rest_api(body_bytes: &[u8]) -> Result<Self, InvalidEmail> {
-        parse_any(body_bytes)
-    }
-
     /// Compatibility view for the pinned cfdkim fork, which reads only `headers`
     /// and `raw_bytes`. Never call body/MIME methods on this view: its private
     /// body fields are empty. Parsing an empty constant cannot recurse.
@@ -114,7 +110,7 @@ impl EmailMessage {
         };
         let (_, domain) = sender
             .addr
-            .split_once('@')
+            .rsplit_once('@')
             .filter(|(local, domain)| !local.is_empty() && !domain.is_empty())
             .ok_or(InvalidEmail::SenderDomainInvalid)?;
         Ok(domain.to_owned())
@@ -369,11 +365,11 @@ mod tests {
                 InvalidEmail::SubjectMissing,
             ),
         ] {
-            let result = EmailMessage::parse_rest_api(raw.as_bytes())
-                .and_then(|email| email.event_id_salt());
+            let result =
+                EmailMessage::parse_imap(raw.as_bytes()).and_then(|email| email.event_id_salt());
             assert_eq!(result.unwrap_err(), expected);
         }
-        let invalid = EmailMessage::parse_rest_api(b"From: alice\r\n\r\n").unwrap();
+        let invalid = EmailMessage::parse_imap(b"From: alice\r\n\r\n").unwrap();
         assert_eq!(
             invalid.sender_domain().unwrap_err(),
             InvalidEmail::SenderDomainInvalid
@@ -388,7 +384,7 @@ mod tests {
             ("unknown instruction", false),
         ] {
             let raw = format!("From: alice@example.com\r\nSubject: {subject}\r\nDate: Thu, 22 Oct 2026 12:00:00 +0000\r\n\r\nbody");
-            let email = EmailMessage::parse_rest_api(raw.as_bytes()).unwrap();
+            let email = EmailMessage::parse_imap(raw.as_bytes()).unwrap();
             assert_eq!(email.event_id_salt().unwrap().len(), 32);
             if valid {
                 email.validate_subject().unwrap();
