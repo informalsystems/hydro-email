@@ -195,3 +195,23 @@ fn relaxed_header_whitespace_cannot_create_a_new_event_id() {
         ))
     );
 }
+
+#[test]
+fn opaque_multipart_body_remains_authenticated_and_commands_are_unchanged() {
+    for subject in [
+        "deposit",
+        "withdraw recipient uatom 42",
+        "withdraw_receipt recipient receipt 1",
+    ] {
+        let raw = RAW.replace("Subject: deposit", &format!("Subject: {subject}"))
+            .replace("\r\n\r\nTest body\r\n", "\r\nContent-Type: multipart/mixed; boundary=outer\r\n\r\n--outer\r\nContent-Type: text/plain\r\n\r\nTest body\r\n--outer--\r\n");
+        let signed = signed(&raw);
+        verify(&signed).unwrap();
+        let email = EmailMessage::parse_imap(signed.as_bytes()).unwrap();
+        email.validate_subject().unwrap();
+        assert_eq!(email.subject.as_deref(), Some(subject));
+        // MIME syntax is ignored for commands, but its exact bytes remain signed.
+        assert_rejected(&signed.replace("--outer--", "--changed--"));
+        assert_rejected(&signed.replace("Test body", "changed body"));
+    }
+}

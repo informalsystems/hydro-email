@@ -44,89 +44,94 @@ impl Guest for Component {
 async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse>> {
     match trigger_action.data {
         TriggerData::Cron(_) => {
-            let fetched = match email::read_next_email().await? {
-                Some(email) => email,
-                None => {
-                    return Ok(Vec::new());
-                }
-            };
+            // Bound each invocation while allowing rejected/deferred mail to be
+            // skipped immediately instead of costing a separate cron cycle.
+            for _ in 0..16 {
+                let fetched = match email::read_next_email().await? {
+                    Some(email) => email,
+                    None => {
+                        return Ok(Vec::new());
+                    }
+                };
 
-            let chain = host::config_var("CHAIN")
-                .ok_or_else(|| anyhow::anyhow!("CHAIN config var is required"))?;
-            let handler =
-                host::config_var("SERVICE_HANDLER_CONTRACT_ADDRESS").ok_or_else(|| {
-                    anyhow::anyhow!("SERVICE_HANDLER_CONTRACT_ADDRESS config var is required")
-                })?;
-            let backend = app_component_backend_client::BackendClient::from_env()?;
-            let prepared = async {
-                // Expired retries use the same confirmed-rejection path below.
-                // Do not execute an instruction that exceeded its retry window.
-                if fetched
-                    .cache
-                    .verification_expired(fetched.id)
-                    .map_err(error::AppError::EmailCache)?
-                {
-                    return Err(email::parser::InvalidEmail::VerificationExpired.into());
-                }
-                let email = fetched
-                    .message
-                    .as_ref()
-                    .map_err(|reason| error::AppError::InvalidEmail(*reason))?;
-                email.sender_domain()?;
-                email.validate_subject()?;
-                let salt = email.event_id_salt()?;
-                verify_email(email).await?;
-                Ok::<_, error::AppError>((email, salt))
-            }
-            .await;
-            let (email, event_id_salt) = match prepared {
-                Ok(prepared) => prepared,
-                Err(error::AppError::InvalidEmail(reason)) => {
-                    backend::reject(
-                        &backend,
-                        &chain,
-                        &handler,
-                        fetched.id,
-                        reason,
-                        &fetched.cache,
-                    )
-                    .await?;
-                    return Ok(Vec::new());
-                }
-                Err(error::AppError::VerificationUnavailable) => {
-                    fetched
+                let chain = host::config_var("CHAIN")
+                    .ok_or_else(|| anyhow::anyhow!("CHAIN config var is required"))?;
+                let handler =
+                    host::config_var("SERVICE_HANDLER_CONTRACT_ADDRESS").ok_or_else(|| {
+                        anyhow::anyhow!("SERVICE_HANDLER_CONTRACT_ADDRESS config var is required")
+                    })?;
+                let backend = app_component_backend_client::BackendClient::from_env()?;
+                let prepared = async {
+                    // Expired retries use the same confirmed-rejection path below.
+                    // Do not execute an instruction that exceeded its retry window.
+                    if fetched
                         .cache
-                        .defer(fetched.id)
-                        .map_err(error::AppError::EmailCache)?;
-                    eprintln!("email_verification_unavailable: retry scheduled");
-                    return Ok(Vec::new());
+                        .verification_expired(fetched.id)
+                        .map_err(error::AppError::EmailCache)?
+                    {
+                        return Err(email::parser::InvalidEmail::VerificationExpired.into());
+                    }
+                    let email = fetched
+                        .message
+                        .as_ref()
+                        .map_err(|reason| error::AppError::InvalidEmail(*reason))?;
+                    email.sender_domain()?;
+                    email.validate_subject()?;
+                    let salt = email.event_id_salt()?;
+                    verify_email(email).await?;
+                    Ok::<_, error::AppError>((email, salt))
                 }
-                Err(error) => return Err(error.into()),
-            };
-            let payload = CustomExecuteMsg::Email(UserIdEmail {
-                from: UserId::new_email_address(&email.original_sender),
-                subject: email.subject.clone().unwrap_or_default(),
-            });
-            let submit = backend::register(
-                &backend,
-                &chain,
-                &handler,
-                &host::get_event_id(Some(&event_id_salt)),
-                &payload,
-                fetched.id,
-            )
-            .await?;
-            if !submit {
+                .await;
+                let (email, event_id_salt) = match prepared {
+                    Ok(prepared) => prepared,
+                    Err(error::AppError::InvalidEmail(reason)) => {
+                        backend::reject(
+                            &backend,
+                            &chain,
+                            &handler,
+                            fetched.id,
+                            reason,
+                            &fetched.cache,
+                        )
+                        .await?;
+                        continue;
+                    }
+                    Err(error::AppError::VerificationUnavailable) => {
+                        fetched
+                            .cache
+                            .defer(fetched.id)
+                            .map_err(error::AppError::EmailCache)?;
+                        eprintln!("email_verification_unavailable: retry scheduled");
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+                let payload = CustomExecuteMsg::Email(UserIdEmail {
+                    from: UserId::new_email_address(&email.original_sender),
+                    subject: email.subject.clone().unwrap_or_default(),
+                });
+                let submit = backend::register(
+                    &backend,
+                    &chain,
+                    &handler,
+                    &host::get_event_id(Some(&event_id_salt)),
+                    &payload,
+                    fetched.id,
+                )
+                .await?;
+                if !submit {
+                    fetched.remember()?;
+                    continue;
+                }
+                let response = WasmResponse {
+                    payload: payload.encode().map_err(|e| anyhow::anyhow!("{e:?}"))?,
+                    ordering: None,
+                    event_id_salt: Some(event_id_salt),
+                };
                 fetched.remember()?;
-                return Ok(Vec::new());
+                return Ok(vec![response]);
             }
-            let response = WasmResponse {
-                payload: payload.encode().map_err(|e| anyhow::anyhow!("{e:?}"))?,
-                ordering: None,
-                event_id_salt: Some(event_id_salt),
-            };
-            fetched.remember()?;
-            return Ok(vec![response]);
+            return Ok(Vec::new());
         }
         TriggerData::Raw(data) => {
             let data = std::str::from_utf8(&data)?;

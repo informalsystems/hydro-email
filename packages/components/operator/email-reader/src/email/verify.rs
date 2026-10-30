@@ -28,7 +28,7 @@ async fn verify_with_resolver(email: &EmailMessage, lookup: Arc<dyn Lookup>) -> 
     // Use the From mailbox as the author. A passing signature must belong to
     // this exact domain, rather than an unrelated domain that also signed mail.
     let from_domain = email.sender_domain()?.to_ascii_lowercase();
-    let parsed = email.get_parsed()?;
+    let parsed = email.dkim_view()?;
     // Parse the From value into addresses and require exactly one individual
     // mailbox. Address groups and lists of multiple senders are not accepted.
     let addresses = mailparse::addrparse(&email.original_sender)
