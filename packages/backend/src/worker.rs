@@ -181,6 +181,19 @@ impl Worker {
                 {
                     self.fail(job, "registry_mapping_conflict").await?;
                 } else {
+                    // A registry entry alone does not establish that this is a
+                    // safe funding address. Apply the same checks as provisioning.
+                    match self.chain.proxy_state(&proxy).await {
+                        Ok(ProxyState::Ready) => (),
+                        Ok(ProxyState::Invalid | ProxyState::Missing) => {
+                            self.fail(job, "proxy_configuration_mismatch").await?;
+                            return Ok(true);
+                        }
+                        Err(_) => {
+                            self.store.defer(&job.user_id).await?;
+                            return Ok(true);
+                        }
+                    }
                     self.store
                         .transition(job, "completed", Some(&proxy), None, None, None)
                         .await?;
