@@ -9,6 +9,13 @@ use cw_storage_plus::{Bound, Item, Map};
 const CONTRACT_NAME: &str = env!("CARGO_PKG_NAME");
 const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const DEFAULT_QUERY_LIMIT: u32 = 30;
+const MAX_QUERY_LIMIT: u32 = 100;
+
+fn query_limit(limit: Option<u32>) -> usize {
+    limit.unwrap_or(DEFAULT_QUERY_LIMIT).min(MAX_QUERY_LIMIT) as usize
+}
+
 /// Only set if we take ServiceHandler interface
 pub const SERVICE_MANAGER: Item<Addr> = Item::new("service-manager");
 /// Only set in the test approach
@@ -86,7 +93,7 @@ pub fn list_email_user_ids(
         Order::Ascending,
     );
 
-    let take_limit = limit.unwrap_or(u32::MAX) as usize;
+    let take_limit = query_limit(limit);
 
     let addrs = iter
         .take(take_limit)
@@ -102,18 +109,18 @@ pub fn list_emails_from(
     start_after: Option<u64>,
     limit: Option<u32>,
 ) -> StdResult<Vec<(EmailMessageOnly, u64)>> {
-    let iter = EMAILS_FROM.range(
+    let iter = EMAILS_FROM.prefix(from).range(
         store,
-        start_after.map(|id| Bound::exclusive((from, id))),
+        start_after.map(Bound::exclusive),
         None,
         Order::Ascending,
     );
 
-    let take_limit = limit.unwrap_or(u32::MAX) as usize;
+    let take_limit = query_limit(limit);
 
     let emails = iter
         .take(take_limit)
-        .map(|item| item.map(|((_, id), email)| (email, id)))
+        .map(|item| item.map(|(id, email)| (email, id)))
         .collect::<StdResult<Vec<(EmailMessageOnly, u64)>>>()?;
 
     Ok(emails)
@@ -131,7 +138,7 @@ pub fn list_emails(
         Order::Ascending,
     );
 
-    let take_limit = limit.unwrap_or(u32::MAX) as usize;
+    let take_limit = query_limit(limit);
 
     let emails = iter
         .take(take_limit)
@@ -143,4 +150,101 @@ pub fn list_emails(
 
 pub fn migrate(storage: &mut dyn Storage) -> StdResult<()> {
     set_contract_version(storage, CONTRACT_NAME, CONTRACT_VERSION)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cosmwasm_std::testing::MockStorage;
+
+    fn storage() -> MockStorage {
+        let mut store = MockStorage::new();
+        EMAIL_PAGINATION_ID_COUNT.save(&mut store, &0).unwrap();
+        store
+    }
+
+    fn add(store: &mut dyn Storage, sender: &str, subject: &str) -> u64 {
+        push_email(
+            store,
+            &UserIdEmail {
+                from: UserId::new_raw(sender.to_owned()),
+                subject: subject.to_owned(),
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sender_queries_stay_within_prefix_across_pages() {
+        let mut store = storage();
+        let first = add(&mut store, "alice", "alice first");
+        let bob = add(&mut store, "bob", "bob only");
+        let second = add(&mut store, "alice", "alice second");
+        let page = list_emails_from(&store, "alice", None, Some(1)).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].0.subject, "alice first");
+        assert_eq!(page[0].1, first);
+        let page = list_emails_from(&store, "alice", Some(first), Some(1)).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].0.subject, "alice second");
+        assert_eq!(page[0].1, second);
+        assert!(list_emails_from(&store, "alice", Some(second), None)
+            .unwrap()
+            .is_empty());
+        let page = list_emails_from(&store, "bob", None, None).unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].0.subject, "bob only");
+        assert_eq!(page[0].1, bob);
+        assert!(list_emails_from(&store, "absent", None, None)
+            .unwrap()
+            .is_empty());
+        assert!(list_emails_from(&store, "absent", Some(first), None)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn all_list_queries_apply_default_maximum_and_zero_limits() {
+        let mut store = storage();
+        for i in 0..125 {
+            add(&mut store, "alice", &format!("alice {i}"));
+            add(&mut store, &format!("user{i:03}"), "other sender");
+        }
+        for (limit, expected) in [
+            (None, 30),
+            (Some(u32::MAX), 100),
+            (Some(1), 1),
+            (Some(0), 0),
+        ] {
+            assert_eq!(
+                list_email_user_ids(&store, None, limit).unwrap().len(),
+                expected
+            );
+            assert_eq!(
+                list_emails_from(&store, "alice", None, limit)
+                    .unwrap()
+                    .len(),
+                expected
+            );
+            assert_eq!(list_emails(&store, None, limit).unwrap().len(), expected);
+        }
+    }
+
+    #[test]
+    fn capped_queries_can_page_through_every_record() {
+        let mut store = storage();
+        for i in 0..125 {
+            add(&mut store, &format!("user{i:03}"), "deposit");
+        }
+        let first = list_email_user_ids(&store, None, Some(u32::MAX)).unwrap();
+        let rest = list_email_user_ids(&store, first.last(), Some(u32::MAX)).unwrap();
+        assert_eq!(first.len(), 100);
+        assert_eq!(rest.len(), 25);
+        assert_eq!(rest[0].as_str(), "user100");
+        let first = list_emails(&store, None, Some(u32::MAX)).unwrap();
+        let rest = list_emails(&store, Some(first.last().unwrap().1), Some(u32::MAX)).unwrap();
+        assert_eq!(first.len(), 100);
+        assert_eq!(rest.len(), 25);
+        assert_eq!(rest[0].1, 101);
+    }
 }

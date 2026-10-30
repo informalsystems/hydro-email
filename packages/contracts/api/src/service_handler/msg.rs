@@ -40,23 +40,23 @@ pub enum CustomQueryMsg {
 
     #[returns(EmailUserIdsResponse)]
     EmailUserIds {
-        /// Max number of emails to return
+        /// Maximum number of user IDs to return (default 30, capped at 100).
         limit: Option<u32>,
         /// Optional exclusive start of the range (last key from previous page)
         start_after: Option<UserId>,
     },
     #[returns(EmailsFromResponse)]
     EmailsFrom {
-        /// Email address
+        /// Sender's user ID.
         from: String,
-        /// Max number of emails to return
+        /// Maximum number of emails to return (default 30, capped at 100).
         limit: Option<u32>,
         /// Optional exclusive start of the range (last key from previous page)
         start_after: Option<u64>,
     },
     #[returns(EmailsResponse)]
     Emails {
-        /// Max number of emails to return
+        /// Maximum number of emails to return (default 30, capped at 100).
         limit: Option<u32>,
         /// Optional exclusive start of the range (last key from previous page)
         start_after: Option<u64>,
