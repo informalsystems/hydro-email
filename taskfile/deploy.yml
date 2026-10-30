@@ -217,6 +217,8 @@ tasks:
         --component-operator-email-reader-cid-file="{{.PATH_COMPONENT_OPERATOR_EMAIL_READER_CID}}"
         --component-aggregator-submitter-cid-file="{{.PATH_COMPONENT_AGGREGATOR_SUBMITTER_CID}}"
         --trigger-cron-schedule="{{.SERVICE_CRON_SCHEDULE}}"
+        --operator-fuel-limit={{.EMAIL_READER_FUEL_LIMIT}}
+        --operator-time-limit-seconds={{.EMAIL_READER_TIME_LIMIT_SECONDS}}
         --chain={{.CHAIN_KEY}}
         {{ if eq .ACTIVATE "true" }} --activate {{ end }}
       - echo "🚀 Uploaded Service JSON to IPFS and saved info to {{.FILENAME}}"

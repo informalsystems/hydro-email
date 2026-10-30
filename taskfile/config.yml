@@ -29,6 +29,8 @@ vars:
 
   # Service config
   SERVICE_CRON_SCHEDULE: "*/10 * * * * * *" # Every 10 seconds
+  EMAIL_READER_FUEL_LIMIT: 1000000000
+  EMAIL_READER_TIME_LIMIT_SECONDS: 9 # Finish before the next default cron tick
 
   # Docker images
   DOCKER_IMAGE_WAVS: 'ghcr.io/lay3rlabs/wavs:2.0.0-rc.12{{if eq .ARCH "arm64"}}-arm64{{end}}'

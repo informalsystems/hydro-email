@@ -16,6 +16,8 @@ pub enum InvalidEmail {
     HeadersTooLarge,
     #[error("email_too_many_headers")]
     TooManyHeaders,
+    #[error("email_too_many_dkim_signatures")]
+    TooManySignatures,
     #[error("email_processing_failed")]
     ProcessingFailed,
     #[error("email_parse_failed")]

@@ -25,8 +25,9 @@ See [.env.example](../.env.example) for the full block, including local-dev (Gre
 
 ### Polling and deduplication
 
-Each poll checks the unread message identifiers and processes at most one email,
-oldest first. Each operator keeps its own in-memory cache to skip emails it has
+Each poll checks unread message identifiers, prioritizes never-attempted messages
+before due retries, and uses oldest UID first within each group. It can skip up to
+16 rejected, deferred, or already completed messages, emitting at most one action. Each operator keeps its own in-memory cache to skip emails it has
 already processed. A successful unread search removes cached entries that are
 no longer unread.
 
@@ -46,6 +47,33 @@ or closes them. Closed unknown outcomes become eligible to be marked read.
 
 Operators register mailbox identifiers with the backend before returning a signed
 action. These identifiers stay out of the signed payload and action responses.
+
+### Verification resource limits
+
+The reader rejects messages with more than three DKIM signatures aligned with the
+From domain, before any DNS lookup. Signatures from unrelated domains do not count
+toward that limit and cannot authenticate the sender. Existing header-size and
+header-count limits also apply.
+
+Service generation sets the reader's WAVS execution limits to nine wall-clock
+seconds and one billion fuel per invocation. These defaults are configured in
+`taskfile/config.yml` as `EMAIL_READER_TIME_LIMIT_SECONDS` and
+`EMAIL_READER_FUEL_LIMIT`. The nine-second limit is shorter than the default
+ten-second cron interval; keep the execution limit below the interval if changing
+the schedule. Fuel limits computation; the wall-clock limit also covers network
+waits. The limits apply to the whole reader invocation, including IMAP and backend
+requests. Aggregator limits are unchanged.
+
+A runtime cutoff leaves the processing reservation created before fetching the
+message. The message backs off for 30 seconds and is rejected after three
+unfinished attempts. DNS failures that return normally retain their existing
+verification backoff and one-hour expiry. Fresh-mail priority prevents due retries
+from repeatedly jumping ahead, but does not eliminate the cost of first attempts
+or guarantee service under an unlimited flood of new mail.
+
+Rebuild the reader and task-helper, upload the reader, and regenerate/update the
+service definition for these changes to take effect. Restarting operators alone
+does not update an existing IPFS service definition.
 
 ### AgentMail REST API — not yet implemented
 
