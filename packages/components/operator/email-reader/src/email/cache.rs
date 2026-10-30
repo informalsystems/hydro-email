@@ -94,10 +94,15 @@ pub struct ProcessedEmails<S = WavsStore> {
 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Retry {
+    // Verification retries; zero means verification has not been deferred.
     attempts: u32,
     first_failure_at: u64,
     retry_after: u64,
+    #[serde(default)]
+    processing_attempts: u32,
 }
+
+const MAX_PROCESSING_ATTEMPTS: u32 = 3;
 
 const MAX_RETRY_AGE_SECONDS: u64 = 3600;
 const MAX_RETRY_DELAY_SECONDS: u64 = 300;
@@ -181,6 +186,25 @@ impl<S: CacheStore> ProcessedEmails<S> {
             .min())
     }
 
+    // Persist before fetch/parsing so traps and unclassified errors cannot pin
+    // the oldest UID on every poll. This is a retry reservation, not completion.
+    pub fn begin_processing(&self, id: MessageId) -> Result<bool> {
+        self.begin_processing_at(id, now_seconds()?)
+    }
+
+    fn begin_processing_at(&self, id: MessageId, now: u64) -> Result<bool> {
+        let previous = self.snapshot.get(&id).and_then(Option::as_ref);
+        let attempts = previous.map_or(0, |retry| retry.processing_attempts);
+        let retry = Retry {
+            attempts: previous.map_or(0, |retry| retry.attempts),
+            first_failure_at: previous.map_or(now, |retry| retry.first_failure_at),
+            retry_after: now.saturating_add(30),
+            processing_attempts: attempts.saturating_add(1),
+        };
+        self.store.set(&id.key(), &serde_json::to_vec(&retry)?)?;
+        Ok(attempts < MAX_PROCESSING_ATTEMPTS)
+    }
+
     pub fn remember(&self, id: MessageId) -> Result<()> {
         // Replacing retry metadata with an empty value ends retries after either
         // successful processing or a confirmed permanent rejection.
@@ -200,12 +224,17 @@ impl<S: CacheStore> ProcessedEmails<S> {
             .get(&id)
             .and_then(Option::as_ref)
             .is_some_and(|retry| {
-                now >= retry.first_failure_at.saturating_add(MAX_RETRY_AGE_SECONDS)
+                retry.attempts > 0
+                    && now >= retry.first_failure_at.saturating_add(MAX_RETRY_AGE_SECONDS)
             })
     }
 
     fn defer_at(&self, id: MessageId, now: u64) -> Result<()> {
-        let previous = self.snapshot.get(&id).and_then(Option::as_ref);
+        let previous = self
+            .snapshot
+            .get(&id)
+            .and_then(Option::as_ref)
+            .filter(|retry| retry.attempts > 0);
         let attempts = previous.map_or(1, |retry| retry.attempts.saturating_add(1));
         // Preserve the original failure time across retries; later failures must
         // not extend the one-hour deadline. Operator restarts reset this cache.
@@ -218,6 +247,7 @@ impl<S: CacheStore> ProcessedEmails<S> {
             attempts,
             first_failure_at,
             retry_after: now.saturating_add(delay).min(deadline),
+            processing_attempts: 0,
         };
         self.store.set(&id.key(), &serde_json::to_vec(&retry)?)
     }
@@ -264,6 +294,51 @@ mod tests {
                 password: password.into(),
             },
         }
+    }
+
+    #[test]
+    fn unfinished_attempts_back_off_allow_newer_mail_and_exhaust_the_budget() -> Result<()> {
+        let store = MemoryStore::default();
+        let poison = id(1, 10);
+        for attempt in 0..MAX_PROCESSING_ATTEMPTS {
+            let now = 1000 + u64::from(attempt) * 30;
+            // Reload between attempts to model a failed invocation, including a trap.
+            let cache = ProcessedEmails::load(store.clone())?;
+            assert_eq!(
+                cache.next_unread_at(1, &unread(&[10, 11]), now)?,
+                Some(poison)
+            );
+            assert!(cache.begin_processing_at(poison, now)?);
+            let next = ProcessedEmails::load(store.clone())?;
+            assert_eq!(
+                next.next_unread_at(1, &unread(&[10, 11]), now + 1)?,
+                Some(id(1, 11))
+            );
+        }
+        let cache = ProcessedEmails::load(store.clone())?;
+        assert!(!cache.begin_processing_at(poison, 1090)?);
+        // Only a confirmed rejection ends retries permanently.
+        cache.remember(poison)?;
+        assert_eq!(
+            ProcessedEmails::load(store)?.next_unread_at(1, &unread(&[10, 11]), 1120)?,
+            Some(id(1, 11))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn classified_verification_outages_do_not_exhaust_the_processing_budget() -> Result<()> {
+        let store = MemoryStore::default();
+        let message = id(1, 10);
+        for attempt in 0..10 {
+            let now = 1000 + attempt * 300;
+            let cache = ProcessedEmails::load(store.clone())?;
+            assert!(cache.begin_processing_at(message, now)?);
+            cache.defer_at(message, now)?;
+        }
+        assert!(!ProcessedEmails::load(store.clone())?.verification_expired_at(message, 4599));
+        assert!(ProcessedEmails::load(store)?.verification_expired_at(message, 4600));
+        Ok(())
     }
 
     #[test]
