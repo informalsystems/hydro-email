@@ -300,22 +300,12 @@ fn query_validate_signature(
             )));
         }
 
-        // Get operator for this signing key as of reference_block (snapshot)
+        // Authorization is evaluated at execution time. A caller-controlled
+        // reference block must not restore a replaced key's authority.
         let signing_key_str = signing_key.to_string();
-        // Prefer snapshot at reference block; fall back to latest if no snapshot exists
-        let operator = match SIGNING_KEY_TO_OPERATOR.may_load_at_height(
-            deps.storage,
-            signing_key_str.clone(),
-            signature_data.reference_block as u64,
-        )? {
-            Some(op) => op,
-            None => match SIGNING_KEY_TO_OPERATOR.may_load(deps.storage, signing_key_str)? {
-                Some(op) => op,
-                None => {
-                    return Err(StdError::msg("Signer not registered"));
-                }
-            },
-        };
+        let operator = SIGNING_KEY_TO_OPERATOR
+            .may_load(deps.storage, signing_key_str)?
+            .ok_or_else(|| StdError::msg("Signer not registered"))?;
 
         // Verify signature using the signing key (safe index: len equality checked above)
         let signature = &signature_data.signatures[i];
@@ -325,20 +315,10 @@ fn query_validate_signature(
             )));
         }
 
-        // Add operator's weight to voting power (snapshot at reference block)
+        // Use current weights consistently with the current total weight.
         let operator_key = operator.to_string();
-        let operator_weight_snapshot = OPERATOR_WEIGHTS.may_load_at_height(
-            deps.storage,
-            operator_key.clone(),
-            signature_data.reference_block as u64,
-        )?;
-        let operator_weight = operator_weight_snapshot
-            .or_else(|| {
-                OPERATOR_WEIGHTS
-                    .may_load(deps.storage, operator_key)
-                    .ok()
-                    .flatten()
-            })
+        let operator_weight = OPERATOR_WEIGHTS
+            .may_load(deps.storage, operator_key)?
             .unwrap_or_default();
         if operator_weight.is_zero() {
             return Err(StdError::msg(format!(
