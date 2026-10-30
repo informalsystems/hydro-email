@@ -1,4 +1,3 @@
-#![allow(warnings)]
 mod backend;
 mod config;
 mod email;
@@ -6,11 +5,9 @@ mod error;
 
 use anyhow::bail;
 use app_contract_api::{
-    proxy::ProxyExecuteMsg,
     service_handler::msg::{CustomExecuteMsg, UserIdEmail},
     user_registry::msg::UserId,
 };
-use cfdkim::verify_email_with_resolver;
 
 use crate::{email::verify::verify_email, wavs::operator::input::TriggerData};
 

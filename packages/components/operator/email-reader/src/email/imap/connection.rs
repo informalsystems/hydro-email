@@ -1,13 +1,11 @@
-use std::{collections::VecDeque, str::Utf8Error};
+use std::str::Utf8Error;
 
-use futures::{channel::mpsc, SinkExt, Stream};
 use thiserror::Error;
 use wstd::io::AsyncPollable;
 
 use crate::{
     config::ImapConfig,
     wasi::{
-        clocks::monotonic_clock,
         io::streams::StreamError,
         sockets::{
             instance_network::instance_network,
@@ -20,8 +18,6 @@ use crate::{
         tls::types::ClientHandshake,
     },
 };
-
-const TIMEOUT_NS: u64 = 1_000_000_000;
 
 // field order matters: https://github.com/bytecodealliance/wasmtime/issues/11804
 pub struct ImapConnection {
@@ -77,38 +73,6 @@ impl ImapConnection {
                 _stream: None,
             })
         }
-    }
-
-    // for STARTTLS
-    pub async fn upgrade_tls(self, config: &ImapConfig) -> Result<Self> {
-        if self._tls_connection.is_some() {
-            // already tls
-            return Ok(self);
-        }
-
-        let sock = ConnectedSocket {
-            pollable: self._pollable,
-            recv: self._recv_stream,
-            send: self._send_stream,
-            sock: self._sock.unwrap(),
-        };
-
-        let TlsConnection {
-            pollable,
-            recv,
-            send,
-            connection,
-            stream,
-        } = TlsConnection::new(&config.host, sock).await?;
-
-        Ok(Self {
-            _pollable: pollable,
-            _recv_stream: recv,
-            _send_stream: send,
-            _sock: None,
-            _tls_connection: Some(connection),
-            _stream: Some(stream),
-        })
     }
 }
 
@@ -202,7 +166,6 @@ struct Address {
     network: Network,
     family: IpAddressFamily,
     sock_addr: IpSocketAddress,
-    ip_addr: IpAddress,
 }
 
 impl Address {
@@ -253,7 +216,6 @@ impl Address {
         Ok(Self {
             network,
             family,
-            ip_addr,
             sock_addr,
         })
     }
@@ -268,9 +230,6 @@ pub enum ImapConnectionError {
 
     #[error("{0:?}")]
     Tcp(#[from] ErrorCode),
-
-    #[error("Connection closed")]
-    ConnectionClosed,
 
     #[error("Tls handshake error: {0}")]
     TlsHandshakeError(String),

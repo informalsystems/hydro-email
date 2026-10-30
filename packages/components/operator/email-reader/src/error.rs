@@ -34,9 +34,6 @@ pub enum AppError {
     EmailCache(anyhow::Error),
 
     #[error("{0:?}")]
-    AnyMessageParse(anyhow::Error),
-
-    #[error("{0:?}")]
     MessageParse(#[from] mailparse::MailParseError),
 
     #[error("Authorization: {0:?}")]
@@ -47,12 +44,6 @@ pub enum AppError {
 
     #[error("DKIM: {0:?}")]
     Dkim(#[from] cfdkim::DKIMError),
-
-    #[error("DKIM Result: {0}")]
-    DkimResult(String),
-
-    #[error("Cannot extract domain: {0}")]
-    CannotExtractDomain(String),
 
     #[error("slog: {0:?}")]
     Slog(#[from] sloggers::Error),
