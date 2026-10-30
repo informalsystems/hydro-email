@@ -18,8 +18,14 @@ authority without requiring the committee to instantiate the contract itself.
 Local changes: accept a required, validated initial `owner` instead of assigning
 `info.sender`; add an owner-only, validated, one-step `TransferOwnership` message
 and an `Owner` query; use local API/package imports and workspace dependencies.
-Existing operator execute/query messages, signature checks, and weight snapshots
-remain unchanged. No migration entry point is added. The registry still creates
+Operator execute/query message formats and cryptographic signature checks remain
+unchanged. Signature authorization now uses current signing-key mappings and
+current operator weights, regardless of the submitted reference block, so key
+replacement and zero-weighting immediately revoke authority. Historical snapshots
+are still recorded, but are not used for signature authorization. The reference
+block remains in the response for compatibility; it does not select permissions.
+Submissions signed before an operator change may require fresh signatures.
+No migration entry point is added. The registry still creates
 the local service-manager copy with Instantiate2, preserving the factory link.
 
 Deployment initially assigns the CLI wallet ownership of both middleware contracts.

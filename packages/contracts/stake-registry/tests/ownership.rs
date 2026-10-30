@@ -75,6 +75,130 @@ fn address(n: u8) -> EvmAddr {
     EvmAddr::new([n; 20])
 }
 
+fn signing_address(key: &k256::ecdsa::SigningKey) -> EvmAddr {
+    let encoded = key.verifying_key().to_encoded_point(false);
+    EvmAddr::new(contract::ethereum_address_raw(encoded.as_bytes()).unwrap())
+}
+
+fn signed_envelope(key: &k256::ecdsa::SigningKey, event: u8, reference_block: u32) -> QueryMsg {
+    use alloy_primitives::{eip191_hash_message, keccak256};
+    let envelope = WavsEnvelope::new(Envelope {
+        eventId: [event; 20].into(),
+        ordering: [0; 12].into(),
+        payload: vec![1, 2, 3].into(),
+    });
+    let digest = eip191_hash_message(keccak256(envelope.as_slice()));
+    let (sig, recovery) = key.sign_prehash_recoverable(digest.as_slice()).unwrap();
+    let mut bytes = sig.to_bytes().to_vec();
+    bytes.push(recovery.to_byte());
+    QueryMsg::ValidateSignature {
+        envelope,
+        signature_data: WavsSignatureData {
+            signers: vec![signing_address(key)],
+            signatures: vec![bytes.into()],
+            reference_block,
+        },
+    }
+}
+
+#[test]
+fn old_reference_blocks_cannot_restore_replaced_or_zero_weighted_keys() {
+    use k256::ecdsa::SigningKey;
+    for zero_weight in [false, true] {
+        let (mut app, _, committee, registry, _) = setup();
+        let old = SigningKey::from_bytes((&[7u8; 32]).into()).unwrap();
+        let new = SigningKey::from_bytes((&[8u8; 32]).into()).unwrap();
+        app.execute_contract(
+            committee.clone(),
+            registry.clone(),
+            &ExecuteMsg::SetOperatorDetails {
+                operator: address(1),
+                signing_key: signing_address(&old),
+                weight: Uint256::from(100u32),
+            },
+            &[],
+        )
+        .unwrap();
+        app.update_block(|block| block.height += 1);
+        let active_height = app.block_info().height as u32;
+        let pending = signed_envelope(&old, 1, active_height);
+        let before: ValidationResult = app.wrap().query_wasm_smart(&registry, &pending).unwrap();
+        assert_eq!(before.voting_power_signed, Uint256::from(100u32));
+        app.update_block(|block| block.height += 10);
+        let revocation_height = app.block_info().height as u32;
+        app.execute_contract(
+            committee,
+            registry.clone(),
+            &ExecuteMsg::SetOperatorDetails {
+                operator: address(1),
+                signing_key: signing_address(if zero_weight { &old } else { &new }),
+                weight: if zero_weight {
+                    Uint256::zero()
+                } else {
+                    Uint256::from(100u32)
+                },
+            },
+            &[],
+        )
+        .unwrap();
+        // An already signed submission loses authority immediately, in the
+        // same block as revocation, without waiting for a snapshot boundary.
+        assert!(app
+            .wrap()
+            .query_wasm_smart::<ValidationResult>(&registry, &pending)
+            .is_err());
+        for height in [
+            0,
+            active_height - 1,
+            active_height,
+            revocation_height - 1,
+            revocation_height,
+            u32::MAX,
+        ] {
+            // A newly forged envelope cannot recover historical authority.
+            let error = app
+                .wrap()
+                .query_wasm_smart::<ValidationResult>(&registry, &signed_envelope(&old, 2, height))
+                .unwrap_err();
+            assert!(error.to_string().contains(if zero_weight {
+                "zero weight"
+            } else {
+                "Signer not registered"
+            }));
+            if !zero_weight {
+                let result: ValidationResult = app
+                    .wrap()
+                    .query_wasm_smart(&registry, &signed_envelope(&new, 3, height))
+                    .unwrap();
+                assert_eq!(result.voting_power_signed, Uint256::from(100u32));
+                assert_eq!(result.total_voting_power, Uint256::from(100u32));
+            }
+        }
+    }
+}
+
+#[test]
+fn old_reference_blocks_use_current_signer_and_total_weights() {
+    use k256::ecdsa::SigningKey;
+    let (mut app, _, committee, registry, _) = setup();
+    let key = SigningKey::from_bytes((&[7u8; 32]).into()).unwrap();
+    let update = |weight| ExecuteMsg::SetOperatorDetails {
+        operator: address(1),
+        signing_key: signing_address(&key),
+        weight: Uint256::from(weight),
+    };
+    app.execute_contract(committee.clone(), registry.clone(), &update(100u32), &[])
+        .unwrap();
+    app.update_block(|block| block.height += 1);
+    let query = signed_envelope(&key, 1, app.block_info().height as u32);
+    app.update_block(|block| block.height += 10);
+    app.execute_contract(committee, registry.clone(), &update(25u32), &[])
+        .unwrap();
+    let result: ValidationResult = app.wrap().query_wasm_smart(&registry, &query).unwrap();
+    assert_eq!(result.voting_power_signed, Uint256::from(25u32));
+    assert_eq!(result.total_voting_power, Uint256::from(25u32));
+}
+
 #[test]
 fn explicit_owner_controls_keys_and_weights_and_factory_relationship_is_preserved() {
     let (mut app, deployer, committee, registry, manager) = setup();
