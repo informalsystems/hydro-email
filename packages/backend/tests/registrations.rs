@@ -160,6 +160,7 @@ struct FakeChain {
     confirmation_pending: bool,
     transaction_fails: AtomicBool,
     lookup_fails: bool,
+    proxy_query_fails: AtomicBool,
 }
 
 #[async_trait]
@@ -177,6 +178,9 @@ impl RegistrationChain for FakeChain {
         Ok("proxy-address".into())
     }
     async fn proxy_state(&self, _address: &str) -> Result<ProxyState> {
+        if self.proxy_query_fails.load(Ordering::SeqCst) {
+            anyhow::bail!("RPC unavailable");
+        }
         if self.invalid_proxy {
             return Ok(ProxyState::Invalid);
         }
@@ -516,11 +520,61 @@ async fn imports_existing_onchain_registration_without_spending(pool: PgPool) {
     let id = admit(&store, "alice@example.com").await;
     let chain = Arc::new(FakeChain {
         registered: AtomicBool::new(true),
+        proxy_deployed: AtomicBool::new(true),
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
     assert_eq!(step(&worker, &id).await, "completed");
     assert_eq!(chain.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn refuses_imported_mapping_to_invalid_or_missing_proxy(pool: PgPool) {
+    for (email, invalid_proxy) in [
+        ("invalid@example.com", true),
+        ("missing@example.com", false),
+    ] {
+        let store = store(pool.clone());
+        let id = admit(&store, email).await;
+        let chain = Arc::new(FakeChain {
+            registered: AtomicBool::new(true),
+            invalid_proxy,
+            ..Default::default()
+        });
+        let worker = worker(store, chain.clone());
+        assert_eq!(step(&worker, &id).await, "failed");
+        let saved = worker.store.get(&id).await.unwrap().unwrap();
+        assert_eq!(
+            saved.error_code.as_deref(),
+            Some("proxy_configuration_mismatch")
+        );
+        assert_eq!(chain.creates.load(Ordering::SeqCst), 0);
+        assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn imported_mapping_query_outage_defers_then_recovers(pool: PgPool) {
+    let store = store(pool);
+    let id = admit(&store, "alice@example.com").await;
+    let chain = Arc::new(FakeChain {
+        registered: AtomicBool::new(true),
+        proxy_deployed: AtomicBool::new(true),
+        proxy_query_fails: AtomicBool::new(true),
+        ..Default::default()
+    });
+    let worker = worker(store, chain.clone());
+    assert_eq!(step(&worker, &id).await, "queued");
+    let saved = worker.store.get(&id).await.unwrap().unwrap();
+    assert!(saved.error_code.is_none());
+    assert!(saved.proxy_address.is_none());
+    chain.proxy_query_fails.store(false, Ordering::SeqCst);
+    assert_eq!(step(&worker, &id).await, "completed");
+    assert_eq!(chain.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]
