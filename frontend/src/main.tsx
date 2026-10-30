@@ -233,8 +233,7 @@ function Workspace({ email, config }: { email: string; config: Config | null }) 
         <div className={registration.status === 'completed' ? 'proxy ready' : 'proxy'}><Value label={registration.status === 'completed' ? 'Proxy address · ready to fund' : 'Proxy address · awaiting completion'} value={registration.proxy_address} /></div>
         {registration.status === 'completed' && registration.proxy_address && <ProxyFunds key={registration.proxy_address} proxyAddress={registration.proxy_address} />}
         {registration.status !== 'completed' && <p className="notice">Wait for completed registration before funding the proxy or sending action emails. An address can be assigned before the proxy exists.</p>}
-        <Value label="Create transaction" value={registration.create_tx_hash} />
-        <Value label="Register transaction" value={registration.register_tx_hash} />
+        <Value label="Registration transaction" value={registration.tx_hash} />
         <p className="hint">Attempt {registration.attempt_number} · Updated {date(registration.updated_at)}</p>
         {registration.error_code && <p className="error">{registration.error_code}</p>}
         {retry && <><p className="notice">{registration.status === 'unknown' ? 'The provisioning outcome is unresolved. ' : ''}Retrying may spend additional gas.</p>

@@ -15,7 +15,7 @@ pub async fn auth_session(
             println!("Getting email for {username}");
 
             client
-                .login(&username, &password)
+                .login(username, password)
                 .map_err(|(e, _)| AppError::Auth(e.into()))
         }
     }

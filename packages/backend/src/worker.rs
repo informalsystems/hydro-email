@@ -63,87 +63,20 @@ impl Worker {
                     return self.fail(job, "proxy_configuration_changed").await;
                 }
                 match self.chain.proxy_state(&proxy).await {
-                    Ok(ProxyState::Ready) => {
-                        self.store
-                            .transition(job, "proxy_created", Some(&proxy), None, None, None)
-                            .await?
-                    }
                     Ok(ProxyState::Invalid) => {
                         self.fail(job, "proxy_configuration_mismatch").await?
                     }
-                    Ok(ProxyState::Missing) => {
-                        if self
-                            .store
-                            .begin_attempt(job, "queued", "creating_proxy", &proxy)
-                            .await?
-                        {
-                            self.record_broadcast(
-                                job,
-                                true,
-                                self.chain.create_proxy(&job.user_id).await,
-                            )
-                            .await?;
+                    Ok(ProxyState::Missing | ProxyState::Ready) => {
+                        if self.store.begin_attempt(job, &proxy).await? {
+                            self.record_broadcast(job, self.chain.register(&job.user_id).await)
+                                .await?;
                         }
                     }
                     Err(_) => self.store.defer(&job.user_id).await?,
                 }
             }
-            "proxy_created" => {
-                if self.store.has_uncertain().await? {
-                    return Ok(());
-                }
-                let proxy = job
-                    .proxy_address
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("Missing proxy address"))?;
-                match self.chain.proxy_state(proxy).await {
-                    Ok(ProxyState::Ready) => {
-                        if self
-                            .store
-                            .begin_attempt(job, "proxy_created", "registering", proxy)
-                            .await?
-                        {
-                            self.record_broadcast(
-                                job,
-                                false,
-                                self.chain.register(&job.user_id, proxy).await,
-                            )
-                            .await?;
-                        }
-                    }
-                    Ok(ProxyState::Invalid) => {
-                        self.fail(job, "proxy_configuration_mismatch").await?
-                    }
-                    _ => self.store.defer(&job.user_id).await?,
-                }
-            }
-            "creating_proxy"
-            | "registering"
-            | "proxy_pending"
-            | "registration_pending"
-            | "unknown" => {
-                let creating = job.submission_stage.as_deref() == Some("creating_proxy");
-                if creating {
-                    if let Some(proxy) = &job.proxy_address {
-                        match self.chain.proxy_state(proxy).await {
-                            Ok(ProxyState::Ready) => {
-                                self.store
-                                    .transition(job, "proxy_created", None, None, None, None)
-                                    .await?;
-                                return Ok(());
-                            }
-                            Ok(ProxyState::Invalid) => {
-                                return self.fail(job, "proxy_configuration_mismatch").await
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                let hash = if creating {
-                    &job.create_tx_hash
-                } else {
-                    &job.register_tx_hash
-                };
+            "submitting" | "pending" | "unknown" => {
+                let hash = &job.tx_hash;
                 if let Some(hash) = hash {
                     if let Ok(Confirmation::Failed) = self.chain.confirm(hash).await {
                         return self.fail(job, "chain_transaction_failed").await;
@@ -156,7 +89,6 @@ impl Worker {
                         .transition(
                             job,
                             "unknown",
-                            None,
                             None,
                             None,
                             Some("submission_outcome_unknown"),
@@ -174,10 +106,18 @@ impl Worker {
     async fn reconcile_mapping(&self, job: &Registration) -> Result<bool> {
         match self.chain.lookup(&job.user_id).await {
             Ok(Some(proxy)) => {
-                if job
-                    .proxy_address
-                    .as_ref()
-                    .is_some_and(|expected| expected != &proxy)
+                let expected = match self.chain.proxy_address(&job.user_id).await {
+                    Ok(address) => address,
+                    Err(_) => {
+                        self.store.defer(&job.user_id).await?;
+                        return Ok(true);
+                    }
+                };
+                if proxy != expected
+                    || job
+                        .proxy_address
+                        .as_ref()
+                        .is_some_and(|expected| expected != &proxy)
                 {
                     self.fail(job, "registry_mapping_conflict").await?;
                 } else {
@@ -195,7 +135,7 @@ impl Worker {
                         }
                     }
                     self.store
-                        .transition(job, "completed", Some(&proxy), None, None, None)
+                        .transition(job, "completed", Some(&proxy), None, None)
                         .await?;
                     tracing::info!(
                         chain_key = %self.store.chain_key,
@@ -218,16 +158,11 @@ impl Worker {
 
     async fn fail(&self, job: &Registration, code: &str) -> Result<()> {
         self.store
-            .transition(job, "failed", None, None, None, Some(code))
+            .transition(job, "failed", None, None, Some(code))
             .await
     }
 
-    async fn record_broadcast(
-        &self,
-        job: &Registration,
-        creating: bool,
-        outcome: Result<Broadcast>,
-    ) -> Result<()> {
+    async fn record_broadcast(&self, job: &Registration, outcome: Result<Broadcast>) -> Result<()> {
         match outcome {
             Ok(Broadcast::Accepted(hash)) => {
                 tracing::info!(
@@ -235,23 +170,12 @@ impl Worker {
                     registry_address = %self.store.registry_address,
                     user_id = %job.user_id,
                     attempt_number = job.attempt_number,
-                    stage = if creating { "creating_proxy" } else { "registering" },
+                    stage = "submitting",
                     tx_hash = %hash,
                     "Transaction submitted; awaiting confirmation"
                 );
                 self.store
-                    .transition(
-                        job,
-                        if creating {
-                            "proxy_pending"
-                        } else {
-                            "registration_pending"
-                        },
-                        None,
-                        creating.then_some(hash.as_str()),
-                        (!creating).then_some(hash.as_str()),
-                        None,
-                    )
+                    .transition(job, "pending", None, Some(hash.as_str()), None)
                     .await?;
             }
             Ok(Broadcast::Rejected(error)) => {
@@ -259,7 +183,7 @@ impl Worker {
                     chain_key = %self.store.chain_key,
                     user_id = %job.user_id,
                     attempt_number = job.attempt_number,
-                    stage = if creating { "creating_proxy" } else { "registering" },
+                    stage = "submitting",
                     error = %format_args!("{error:#}"),
                     "Transaction submission rejected"
                 );
@@ -270,7 +194,7 @@ impl Worker {
                     chain_key = %self.store.chain_key,
                     user_id = %job.user_id,
                     attempt_number = job.attempt_number,
-                    stage = if creating { "creating_proxy" } else { "registering" },
+                    stage = "submitting",
                     error = %format_args!("{error:#}"),
                     "Transaction submission outcome unknown"
                 );
@@ -278,7 +202,6 @@ impl Worker {
                     .transition(
                         job,
                         "unknown",
-                        None,
                         None,
                         None,
                         Some("submission_outcome_unknown"),

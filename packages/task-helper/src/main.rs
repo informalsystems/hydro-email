@@ -333,6 +333,7 @@ async fn main() {
             let client = ctx.signing_client().await.unwrap();
 
             let instantiate_msg = app_contract_api::user_registry::msg::InstantiateMsg {
+                owner: client.addr.to_string(),
                 admins: vec![ctx.parse_address(&admin).await.unwrap().to_string()],
             };
 
@@ -836,17 +837,33 @@ async fn main() {
 
             println!("{:#?}\n", state);
         }
+        CliCommand::ConfigureUserRegistry {
+            user_registry_address,
+            proxy_code_id,
+            service_handler,
+            control_center_registry,
+            owner,
+            ..
+        } => {
+            admin::configure_user_registry(
+                &ctx,
+                &user_registry_address,
+                proxy_code_id,
+                &service_handler,
+                &control_center_registry,
+                &owner,
+            )
+            .await
+            .unwrap();
+        }
         CliCommand::ContractRegisterUser {
             email_address,
             user_registry_address,
-            proxy_address,
             broadcast,
             ..
         } => {
-            let proxy = ctx.parse_address(&proxy_address).await.unwrap();
             let msg = app_contract_api::user_registry::msg::ExecuteMsg::RegisterUser {
                 user_id: UserId::new_email_address(&email_address),
-                proxy_address: proxy.to_string(),
             };
             admin::register_or_prepare(
                 &ctx,

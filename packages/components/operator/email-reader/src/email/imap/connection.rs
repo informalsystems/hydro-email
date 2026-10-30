@@ -36,7 +36,7 @@ impl ImapConnection {
         // We need to use underlying primitives to split the TcpStream because
         // TcpStream.split() returns borrows to the halves and tls needs owned halves
 
-        let addr = Address::new(&config).await?;
+        let addr = Address::new(config).await?;
         let sock = ConnectedSocket::new(&addr).await?;
 
         if config.tls {
@@ -144,7 +144,7 @@ impl ConnectedSocket {
         let (recv, send) = loop {
             match sock.finish_connect() {
                 Ok(res) => break res,
-                Err(e) if matches!(e, ErrorCode::WouldBlock) => {
+                Err(ErrorCode::WouldBlock) => {
                     pollable.wait_for().await;
                 }
                 Err(e) => {
@@ -174,7 +174,7 @@ impl Address {
 
         let stream = resolve_addresses(&network, &config.host)?;
 
-        let pollable = AsyncPollable::new(stream.subscribe().into());
+        let pollable = AsyncPollable::new(stream.subscribe());
 
         let ip_addr = loop {
             match stream.resolve_next_address() {
@@ -246,9 +246,7 @@ impl std::io::Read for ImapConnection {
         let data = self
             ._recv_stream
             .blocking_read(buf.len() as u64)
-            .map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("Stream error: {:?}", e))
-            })?;
+            .map_err(|e| std::io::Error::other(format!("Stream error: {:?}", e)))?;
 
         if data.is_empty() {
             return Ok(0);
@@ -262,9 +260,10 @@ impl std::io::Read for ImapConnection {
 impl std::io::Write for ImapConnection {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         loop {
-            let size = self._send_stream.check_write().map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("Stream error: {:?}", e))
-            })?;
+            let size = self
+                ._send_stream
+                .check_write()
+                .map_err(|e| std::io::Error::other(format!("Stream error: {:?}", e)))?;
             let size = size.min(buf.len() as u64).try_into().unwrap();
 
             if size == 0 {
@@ -272,17 +271,17 @@ impl std::io::Write for ImapConnection {
                 continue;
             }
 
-            self._send_stream.write(&buf[..size]).map_err(|e| {
-                std::io::Error::new(std::io::ErrorKind::Other, format!("Stream error: {:?}", e))
-            })?;
+            self._send_stream
+                .write(&buf[..size])
+                .map_err(|e| std::io::Error::other(format!("Stream error: {:?}", e)))?;
 
             return Ok(size);
         }
     }
 
     fn flush(&mut self) -> std::io::Result<()> {
-        self._send_stream.flush().map_err(|e| {
-            std::io::Error::new(std::io::ErrorKind::Other, format!("Stream error: {:?}", e))
-        })
+        self._send_stream
+            .flush()
+            .map_err(|e| std::io::Error::other(format!("Stream error: {:?}", e)))
     }
 }

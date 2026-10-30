@@ -10,6 +10,23 @@
 use cosmwasm_schema::cw_serde;
 use cosmwasm_std::{Coin, StdError, StdResult, Uint128};
 
+/// Wire-compatible factory configuration; avoids linking proxy entry points.
+#[cw_serde]
+pub struct ProxyInstantiateMsg {
+    pub admins: Vec<String>,
+    pub control_center_registry: String,
+}
+
+#[cw_serde]
+pub enum ProxyQueryMsg {
+    Config {},
+}
+
+#[cw_serde]
+pub struct ProxyConfigResponse {
+    pub config: ProxyInstantiateMsg,
+}
+
 /// Execute messages for the proxy contract.
 /// Mirrors `hydro_proxy::msg::ExecuteMsg`.
 #[cw_serde]

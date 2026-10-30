@@ -60,12 +60,34 @@ signer. The proxy's own application admin remains the service-handler contract.
 Enabling provisioning also processes existing queued jobs. Check the database
 queue before starting it against a live chain; these jobs can spend gas.
 
-Deployment sets the registry's sole admin from
+Deployment sets the initial provisioning admin from
 `DEPLOY_USER_REGISTRY_ADMIN_ADDRESS`; use the public address matching this API's
-`BACKEND_SIGNING_MNEMONIC`. Deployment does not need that mnemonic. The registry
-sets its admins at instantiation and exposes no admin update method. A new wallet is not automatically authorized. The worker checks contracts
-exist and simulates a registration at startup to verify permission before spending
-gas on a proxy. Simulation does not broadcast or write chain state.
+`BACKEND_SIGNING_MNEMONIC`. Deployment never needs that mnemonic. The CLI temporarily
+owns the user registry, configures its proxy factory once after deploying the handler
+and control-center registry, then transfers ownership to `HYDRO_COMMITTEE_ADDRESS`.
+The backend checks its admin authorization and the immutable factory configuration
+through the registry's `Config` query at startup. No startup transaction is sent.
+
+The provisioning signer can request a user ID, but cannot choose its proxy address,
+code, permissions, or control-center registry. The user registry creates the proxy
+with no CosmWasm admin and the service handler as its sole application admin.
+Its address depends on the registry address, proxy code checksum, and canonical
+32-byte user-ID salt, so replacing a provisioning signer does not change addresses.
+
+The DAO can revoke a provisioner and authorize a replacement in one registry execute:
+`{"update_admins":{"admins":["<new backend signer address>"]}}`. The list replaces
+all provisioning admins and must be nonempty. Update `BACKEND_SIGNING_MNEMONIC` and
+restart the backend after that transaction confirms. The old signer immediately
+loses registration authority. Existing proxies remain valid because their creator
+is the registry contract, not the hot wallet. Ownership can be transferred with
+`{"transfer_ownership":{"owner":"<new DAO address>"}}`; neither operation can
+change the factory configuration or existing user mappings.
+
+This requires a fresh registry and a handler pointing to it; old registry deployments
+are not compatible with the new registration message. The initial development schema is simplified in place: reset existing test
+databases before running this version. Registration responses now expose one
+`tx_hash` for the combined transaction; the old creation and registration hash
+fields and separate creation stages are removed.
 
 The signer must be dedicated to this provisioner. In particular, do not share it
 with WAVS aggregators or a CLI concurrently. Keep deployment configuration stable
@@ -118,8 +140,7 @@ not secrets or proof of email ownership.
   "status": "completed",
   "attempt_number": 1,
   "proxy_address": "<chain address>",
-  "create_tx_hash": "<hash>",
-  "register_tx_hash": "<hash>",
+  "tx_hash": "<hash>",
   "error_code": null,
   "created_at": "<UTC timestamp>",
   "updated_at": "<UTC timestamp>"
@@ -154,25 +175,25 @@ reserve quota, or submit transactions.
 ## Registration provisioning and failures
 
 ```text
-queued → creating_proxy → proxy_pending → proxy_created
-       → registering → registration_pending → completed
+queued → submitting → pending → completed
 ```
 
-The worker first queries the registry. If a mapping already exists, it imports
-that mapping without creating a proxy. Otherwise it uses `instantiate2` with the
-32-byte email ID as the salt. The creator wallet, code checksum, and salt determine
-the proxy address. An existing proxy at that address is validated and reused.
-The worker then registers the mapping in a separate transaction and verifies it
-before reporting completion. The initial deployment's configured example email
-can remain a dummy account; it uses the existing deployment helper.
+The worker first queries the registry. An existing mapping is accepted only if
+it equals this user's deterministic factory address and the proxy passes the
+code, creator, admin, and control-center checks. Otherwise, the backend sends
+`RegisterUser { user_id }` to the registry. Proxy creation and mapping are atomic:
+either both succeed or both roll back. A conforming proxy already at the factory
+address is validated and reused; an unrelated proxy cannot be imported. The
+optional `task deploy:user` uses this same contract flow and no longer accepts
+an arbitrary proxy address.
 
 Intent and a unique attempt record are committed before each broadcast. A CheckTx hash
 means pending inclusion, not success. The worker polls for confirmation without
 rebroadcasting. Confirmed chain failure or explicit rejection is `failed`.
 Network errors or interrupted attempts without a saved hash become `unknown`.
 The expected proxy address is saved before creation, so it may appear in a response
-before the contract exists. Creation can succeed while registration fails; the
-worker keeps that address and reuses the proxy when registration is resumed.
+before the contract exists. A failed combined transaction leaves neither a proxy
+nor a mapping; the same deterministic address is used on an explicit retry.
 
 Posting the same email returns an active or completed registration unchanged.
 For a `failed` or `unknown` registration, it queues an explicit retry and increments
@@ -184,14 +205,18 @@ rejected on-chain; an explicit retry can therefore still incur additional fees.
 
 Postgres and the chain are not atomic. A crash between broadcast and saving its
 hash can leave an unknown outcome. Known hashes continue to be checked. A mapping
-query can resolve an uncertain registration. The expected proxy can also be queried
-directly even if the creation transaction hash was lost. Pending and
+query can resolve an uncertain registration. The worker verifies the proxy before accepting that mapping, including after a
+lost broadcast response. Pending and
 unknown attempts block further provisioning in the same registry to avoid using
 the wallet while its sequence may be uncertain. Explicit retries resume work;
 pending transactions are checked without starting parallel attempts.
 
 `registration_transitions` keeps the status history for each attempt.
-`registration_attempts` keeps individual submission records and transaction hashes.
+`registration_attempts` keeps one submission record per attempt and its transaction
+hash. This durable record prevents a duplicate broadcast even if the current
+registration status is reset. `submitting` means the attempt was reserved before
+broadcast; `pending` means an accepted transaction hash is awaiting confirmation.
+`failed` and `unknown` retain explicit retry semantics.
 
 The worker sleeps one second between steps. Deferred jobs become eligible for
 another check after five seconds. Completion time also depends on block inclusion,
@@ -213,10 +238,9 @@ Transactions use the chain client's simulation-based gas estimation and the
 selected chain's configured gas price and fee denomination. There are no separate
 per-transaction or daily backend gas settings. Registration quotas limit accepted
 requests, not the timing or monetary cost of transactions: older queued jobs can
-be processed later. Each new registration normally needs two transactions.
+be processed later. Each new registration needs one combined create-and-register transaction.
 
-`registration_attempts` permits one submission per stage per explicitly requested
-attempt, preventing parallel submissions while allowing registration recovery.
+`registration_attempts` permits one submission per explicitly requested attempt, preventing parallel submissions while allowing registration recovery.
 
 ## Action submission storage
 
@@ -664,7 +688,7 @@ This test spends real gas when provisioning is enabled.
    Hub, use `gaiad query wasm contract-state smart <registry_address> '<query>'
 --node <rpc_endpoint> --output json`. The mapping must match `proxy_address`.
    Postgres should contain one completed registration, its transition history,
-   and two submission records with the returned transaction hashes.
+   and one submission record with the returned `tx_hash`.
 
 5. Repeat the same POST. Expect `200`, still completed, with the same attempt
    number, proxy, and hashes, and no new submission records. Stop the API and set

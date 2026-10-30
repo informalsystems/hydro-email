@@ -1,7 +1,9 @@
 use std::time::Duration;
 
 use anyhow::{ensure, Result};
-use app_contract_api::user_registry::msg::{ExecuteMsg, ProxyAddressResponse, QueryMsg, UserId};
+use app_contract_api::user_registry::msg::{
+    ConfigResponse, ExecuteMsg, ProxyAddressResponse, QueryMsg, UserId,
+};
 use async_trait::async_trait;
 use layer_climb::{prelude::*, proto::proto_into_any};
 
@@ -30,8 +32,7 @@ pub trait RegistrationChain: Send + Sync {
     async fn lookup(&self, user_id: &str) -> Result<Option<String>>;
     async fn proxy_address(&self, user_id: &str) -> Result<String>;
     async fn proxy_state(&self, address: &str) -> Result<ProxyState>;
-    async fn create_proxy(&self, user_id: &str) -> Result<Broadcast>;
-    async fn register(&self, user_id: &str, proxy: &str) -> Result<Broadcast>;
+    async fn register(&self, user_id: &str) -> Result<Broadcast>;
     async fn confirm(&self, hash: &str) -> Result<Confirmation>;
 }
 
@@ -81,35 +82,26 @@ impl CosmosChain {
                 &hydro_interface::inflow_control_center_registry::QueryMsg::ControlCenters {},
             )
             .await?;
-        // The current registry has no admin query. Simulating a registration
-        // checks signer authorization before we pay to create any proxy. Simulation
-        // does not broadcast or commit the temporary registry write.
-        let probe = UserId::new_email_address(&format!(
-            "backend-preflight-{}@invalid.example",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)?
-                .as_nanos()
-        ));
-        let probe_msg = ExecuteMsg::RegisterUser {
-            user_id: probe,
-            proxy_address: config.service_handler_address.clone(),
-        };
-        let message = client.contract_execute_msg(&registry, vec![], &probe_msg)?;
-        let builder = client.tx_builder();
-        let signer_info = client
-            .signer
-            .signer_info(
-                builder.current_sequence().await?,
-                layer_climb::proto::tx::signing::SignMode::Unspecified,
-            )
+        let registry_config: ConfigResponse = client
+            .querier
+            .contract_smart(&registry, &QueryMsg::Config {})
             .await?;
-        let mut body = layer_climb::proto::tx::TxBody {
-            messages: vec![proto_into_any(&message)?],
-            ..Default::default()
-        };
-        builder
-            .simulate_gas(signer_info, client.account_number, &mut body)
-            .await?;
+        ensure!(
+            registry_config
+                .admins
+                .iter()
+                .any(|admin| admin.as_str() == client.addr.to_string()),
+            "Backend signer is not a registry admin"
+        );
+        let proxy = registry_config
+            .proxy
+            .ok_or_else(|| anyhow::anyhow!("Registry proxy factory is not configured"))?;
+        ensure!(
+            proxy.proxy_code_id == config.proxy_code_id
+                && proxy.service_handler.as_str() == config.service_handler_address
+                && proxy.control_center_registry.as_str() == config.control_center_registry,
+            "Backend proxy configuration does not match the registry factory"
+        );
         Ok(Self {
             client,
             registry,
@@ -170,7 +162,7 @@ impl RegistrationChain for CosmosChain {
         Ok(self
             .client
             .querier
-            .contract_predict_address(self.code_id, &self.client.addr, &proxy_salt(user_id)?)
+            .contract_predict_address(self.code_id, &self.registry, &proxy_salt(user_id)?)
             .await?
             .to_string())
     }
@@ -188,7 +180,7 @@ impl RegistrationChain for CosmosChain {
             return Ok(ProxyState::Missing);
         };
         if info.code_id != self.code_id
-            || info.creator != self.client.addr.to_string()
+            || info.creator != self.registry.to_string()
             || !info.admin.is_empty()
         {
             return Ok(ProxyState::Invalid);
@@ -215,31 +207,9 @@ impl RegistrationChain for CosmosChain {
         )
     }
 
-    async fn create_proxy(&self, user_id: &str) -> Result<Broadcast> {
-        let msg = hydro_proxy::msg::InstantiateMsg {
-            admins: vec![self.service_handler.clone()],
-            control_center_registry: self.control_center_registry.clone(),
-        };
-        let message = self.client.contract_instantiate2_msg(
-            None,
-            self.code_id,
-            "Hydro Email Proxy",
-            vec![],
-            proxy_salt(user_id)?,
-            false,
-            &msg,
-        )?;
-        self.broadcast(proto_into_any(&message)?).await
-    }
-
-    async fn register(&self, user_id: &str, proxy: &str) -> Result<Broadcast> {
-        ensure!(
-            self.proxy_state(proxy).await? == ProxyState::Ready,
-            "Unexpected proxy configuration"
-        );
+    async fn register(&self, user_id: &str) -> Result<Broadcast> {
         let msg = ExecuteMsg::RegisterUser {
             user_id: UserId::new_raw(user_id.to_owned()),
-            proxy_address: proxy.to_owned(),
         };
         let message = self
             .client
@@ -269,9 +239,9 @@ impl RegistrationChain for CosmosChain {
 }
 
 fn proxy_salt(user_id: &str) -> Result<Vec<u8>> {
-    let salt = const_hex::decode(user_id)?;
-    ensure!(salt.len() == 32, "Expected a SHA-256 email ID");
-    Ok(salt)
+    UserId::new_raw(user_id.to_owned())
+        .proxy_salt()
+        .map_err(|error| anyhow::anyhow!(error.to_string()))
 }
 
 // Recognize contract absence only when the chain names the queried address;
@@ -292,7 +262,7 @@ mod tests {
     #[test]
     fn email_salt_predicts_one_proxy_and_duplicate_creation_fails() {
         let mut app = App::default();
-        let creator = app.api().addr_make("registration-wallet");
+        let creator = app.api().addr_make("user-registry");
         let handler = app.api().addr_make("handler");
         let center = app.api().addr_make("center");
         let code = ContractWrapper::new(

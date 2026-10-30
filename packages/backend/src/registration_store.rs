@@ -17,11 +17,8 @@ pub struct Registration {
     pub email: String,
     pub status: String,
     pub attempt_number: i64,
-    #[serde(skip_serializing)]
-    pub submission_stage: Option<String>,
     pub proxy_address: Option<String>,
-    pub create_tx_hash: Option<String>,
-    pub register_tx_hash: Option<String>,
+    pub tx_hash: Option<String>,
     pub error_code: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -90,7 +87,7 @@ impl RegistrationStore {
         if existing.is_some() {
             // Preserve the expected proxy; previous hashes remain in the attempt history.
             // Incrementing the attempt fences out stale worker updates.
-            let row: Registration = sqlx::query_as("UPDATE registrations SET status='queued', attempt_number=attempt_number+1, submission_stage=NULL, create_tx_hash=NULL, register_tx_hash=NULL, error_code=NULL, updated_at=now(), next_check_at=now() WHERE chain_key=$1 AND registry_address=$2 AND user_id=$3 RETURNING *")
+            let row: Registration = sqlx::query_as("UPDATE registrations SET status='queued', attempt_number=attempt_number+1, tx_hash=NULL, error_code=NULL, updated_at=now(), next_check_at=now() WHERE chain_key=$1 AND registry_address=$2 AND user_id=$3 RETURNING *")
                 .bind(&self.chain_key).bind(&self.registry_address).bind(user_id)
                 .fetch_one(&mut *tx).await?;
             self.audit(&mut tx, user_id, row.attempt_number, "queued", None)
@@ -126,27 +123,21 @@ impl RegistrationStore {
         job: &Registration,
         status: &str,
         proxy: Option<&str>,
-        create_hash: Option<&str>,
-        register_hash: Option<&str>,
+        tx_hash: Option<&str>,
         error: Option<&str>,
     ) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        let changed = sqlx::query("UPDATE registrations SET status=$4, proxy_address=COALESCE($5,proxy_address), create_tx_hash=COALESCE($6,create_tx_hash), register_tx_hash=COALESCE($7,register_tx_hash), error_code=$8, updated_at=now(), next_check_at=now() WHERE chain_key=$1 AND registry_address=$2 AND user_id=$3 AND attempt_number=$9")
+        let changed = sqlx::query("UPDATE registrations SET status=$4, proxy_address=COALESCE($5,proxy_address), tx_hash=COALESCE($6,tx_hash), error_code=$7, updated_at=now(), next_check_at=now() WHERE chain_key=$1 AND registry_address=$2 AND user_id=$3 AND attempt_number=$8")
             .bind(&self.chain_key).bind(&self.registry_address).bind(&job.user_id).bind(status)
-            .bind(proxy).bind(create_hash).bind(register_hash).bind(error).bind(job.attempt_number)
+            .bind(proxy).bind(tx_hash).bind(error).bind(job.attempt_number)
             .execute(&mut *tx).await?.rows_affected();
         if changed == 0 {
             return Ok(());
         }
-        if let Some(hash) = create_hash.or(register_hash) {
-            let stage = if create_hash.is_some() {
-                "creating_proxy"
-            } else {
-                "registering"
-            };
-            sqlx::query("UPDATE registration_attempts SET tx_hash=$6 WHERE chain_key=$1 AND registry_address=$2 AND user_id=$3 AND attempt_number=$4 AND stage=$5")
+        if let Some(hash) = tx_hash {
+            sqlx::query("UPDATE registration_attempts SET tx_hash=$5 WHERE chain_key=$1 AND registry_address=$2 AND user_id=$3 AND attempt_number=$4")
                 .bind(&self.chain_key).bind(&self.registry_address).bind(&job.user_id)
-                .bind(job.attempt_number).bind(stage).bind(hash).execute(&mut *tx).await?;
+                .bind(job.attempt_number).bind(hash).execute(&mut *tx).await?;
         }
         self.audit(&mut tx, &job.user_id, job.attempt_number, status, error)
             .await?;
@@ -157,34 +148,35 @@ impl RegistrationStore {
     pub async fn next(&self) -> Result<Option<Registration>> {
         // A single elected worker processes this namespace. Uncertain attempts
         // take priority and block further wallet use until chain evidence resolves them.
-        Ok(sqlx::query_as("SELECT * FROM registrations WHERE chain_key=$1 AND registry_address=$2 AND status NOT IN ('completed','failed') AND next_check_at <= now() ORDER BY CASE WHEN status IN ('creating_proxy','registering','proxy_pending','registration_pending','unknown') THEN 0 ELSE 1 END, created_at, user_id LIMIT 1")
+        Ok(sqlx::query_as("SELECT * FROM registrations WHERE chain_key=$1 AND registry_address=$2 AND status NOT IN ('completed','failed') AND next_check_at <= now() ORDER BY CASE WHEN status IN ('submitting','pending','unknown') THEN 0 ELSE 1 END, created_at, user_id LIMIT 1")
             .bind(&self.chain_key).bind(&self.registry_address).fetch_optional(&self.pool).await?)
     }
 
-    pub async fn begin_attempt(
-        &self,
-        job: &Registration,
-        expected: &str,
-        stage: &str,
-        proxy: &str,
-    ) -> Result<bool> {
+    pub async fn begin_attempt(&self, job: &Registration, proxy: &str) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let changed = sqlx::query("UPDATE registrations SET status=$4, submission_stage=$4, proxy_address=$7, create_tx_hash=CASE WHEN $4='creating_proxy' THEN NULL ELSE create_tx_hash END, register_tx_hash=NULL, updated_at=now(), error_code=NULL WHERE chain_key=$1 AND registry_address=$2 AND user_id=$3 AND status=$5 AND attempt_number=$6")
-            .bind(&self.chain_key).bind(&self.registry_address).bind(&job.user_id).bind(stage).bind(expected).bind(job.attempt_number).bind(proxy)
+        let changed = sqlx::query("UPDATE registrations SET status='submitting', proxy_address=$5, tx_hash=NULL, updated_at=now(), error_code=NULL WHERE chain_key=$1 AND registry_address=$2 AND user_id=$3 AND status='queued' AND attempt_number=$4")
+            .bind(&self.chain_key).bind(&self.registry_address).bind(&job.user_id)
+            .bind(job.attempt_number).bind(proxy)
             .execute(&mut *tx).await?.rows_affected();
         if changed == 0 {
             return Ok(false);
         }
         // Keep a durable attempt record independently of the current status so
         // restoring a job's status cannot accidentally allow a second broadcast.
-        let inserted = sqlx::query("INSERT INTO registration_attempts (chain_key, registry_address, user_id, attempt_number, stage) VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING")
-            .bind(&self.chain_key).bind(&self.registry_address).bind(&job.user_id).bind(job.attempt_number).bind(stage)
+        let inserted = sqlx::query("INSERT INTO registration_attempts (chain_key, registry_address, user_id, attempt_number) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING")
+            .bind(&self.chain_key).bind(&self.registry_address).bind(&job.user_id).bind(job.attempt_number)
             .execute(&mut *tx).await?.rows_affected();
         if inserted == 0 {
             return Ok(false);
         }
-        self.audit(&mut tx, &job.user_id, job.attempt_number, stage, None)
-            .await?;
+        self.audit(
+            &mut tx,
+            &job.user_id,
+            job.attempt_number,
+            "submitting",
+            None,
+        )
+        .await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -196,7 +188,7 @@ impl RegistrationStore {
     }
 
     pub async fn has_uncertain(&self) -> Result<bool> {
-        Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM registrations WHERE chain_key=$1 AND registry_address=$2 AND status IN ('creating_proxy','registering','proxy_pending','registration_pending','unknown'))")
+        Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM registrations WHERE chain_key=$1 AND registry_address=$2 AND status IN ('submitting','pending','unknown'))")
             .bind(&self.chain_key).bind(&self.registry_address).fetch_one(&self.pool).await?)
     }
 }

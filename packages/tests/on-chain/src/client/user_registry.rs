@@ -28,6 +28,7 @@ impl From<UserRegistryClient> for UserRegistryContract {
 impl UserRegistryClient {
     pub async fn new(client: SigningClientWrapper, admins: Option<Vec<Address>>) -> Self {
         let msg = app_contract_api::user_registry::msg::InstantiateMsg {
+            owner: client.addr.to_string(),
             admins: match admins {
                 Some(admins) => admins.iter().map(|a| a.to_string()).collect(),
                 None => vec![client.addr.to_string()],
