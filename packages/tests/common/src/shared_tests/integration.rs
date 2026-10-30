@@ -9,10 +9,12 @@ pub async fn test_integration(
     service_handler: impl Into<ServiceHandlerContract>,
     proxy: impl Into<ProxyContract>,
     wrong_proxy: impl Into<ProxyContract>,
+    proxy_code_id: u64,
 ) {
     let service_handler = service_handler.into();
     let proxy = proxy.into();
     let wrong_proxy = wrong_proxy.into();
+    let proxy_config = proxy.querier.config().await.unwrap().config;
 
     let user_registry = UserRegistryContract::new(
         service_handler.querier.inner.clone(),
@@ -42,19 +44,54 @@ pub async fn test_integration(
         .await
         .unwrap_err();
 
+    user_registry
+        .executor
+        .exec(
+            &app_contract_api::user_registry::msg::ExecuteMsg::ConfigureProxy {
+                proxy_code_id,
+                service_handler: service_handler.address.to_string(),
+                control_center_registry: proxy_config.control_center_registry.to_string(),
+            },
+            &[],
+        )
+        .await
+        .unwrap();
+
     // register the user's proxy address
     user_registry
         .executor
-        .register_user_id(email.from.clone(), proxy.address.clone())
+        .register_user_id(email.from.clone())
         .await
         .unwrap();
 
     // register a different user's proxy address to verify we get the right one
     user_registry
         .executor
-        .register_user_id(not_this_email.from.clone(), wrong_proxy.address.clone())
+        .register_user_id(not_this_email.from.clone())
         .await
         .unwrap();
+
+    let address = user_registry
+        .querier
+        .proxy_address_user_id(email.from.clone())
+        .await
+        .unwrap();
+    let proxy = ProxyContract::new(
+        proxy.querier.inner.clone(),
+        proxy.executor.inner.clone(),
+        address,
+    );
+    let address = user_registry
+        .querier
+        .proxy_address_user_id(not_this_email.from.clone())
+        .await
+        .unwrap();
+    let wrong_proxy = ProxyContract::new(
+        wrong_proxy.querier.inner.clone(),
+        wrong_proxy.executor.inner.clone(),
+        address,
+    );
+    assert_ne!(proxy.address, wrong_proxy.address);
 
     // got the right one
     assert_eq!(

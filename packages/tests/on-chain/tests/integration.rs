@@ -84,26 +84,56 @@ async fn integration() {
         setup.service_handler.clone(),
         setup.proxy.clone(),
         setup.wrong_proxy.clone(),
+        on_chain_tests::code_ids::CodeId::new_proxy().await,
     )
     .await;
 }
 
 #[tokio::test]
 async fn deposit_and_withdraw() {
-    let setup = setup().await;
+    let mut setup = setup().await;
 
     let email = UserIdEmail {
         from: UserId::new_email_address("depositor@example.com"),
         subject: "deposit".to_string(),
     };
 
+    let config = setup.proxy.querier.config().await.unwrap().config;
+    setup
+        .user_registry
+        .executor
+        .exec(
+            &app_contract_api::user_registry::msg::ExecuteMsg::ConfigureProxy {
+                proxy_code_id: on_chain_tests::code_ids::CodeId::new_proxy().await,
+                service_handler: setup.service_handler.address.to_string(),
+                control_center_registry: config.control_center_registry.to_string(),
+            },
+            &[],
+        )
+        .await
+        .unwrap();
     // Register user's proxy address
     setup
         .user_registry
         .executor
-        .register_user_id(email.from.clone(), setup.proxy.address.clone().into())
+        .register_user_id(email.from.clone())
         .await
         .unwrap();
+
+    let address = setup
+        .user_registry
+        .querier
+        .proxy_address_user_id(email.from.clone())
+        .await
+        .unwrap();
+    setup.proxy.address = setup
+        .client
+        .querier
+        .chain_config
+        .parse_address(&address.to_string())
+        .unwrap();
+    setup.proxy.querier.addr = address.clone();
+    setup.proxy.executor.addr = address;
 
     // Fund the proxy with some untrn for deposit
     let deposit_amount = 1_000_000u128;

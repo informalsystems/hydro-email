@@ -1,6 +1,6 @@
 export type Registration = {
   user_id: string; status: string; attempt_number: number; proxy_address: string | null;
-  create_tx_hash: string | null; register_tx_hash: string | null; error_code: string | null;
+  tx_hash: string | null; error_code: string | null;
   created_at: string; updated_at: string;
 };
 export type Action = {

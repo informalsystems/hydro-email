@@ -125,6 +125,21 @@ pub enum CliCommand {
         #[clap(flatten)]
         args: CliArgs,
     },
+    /// Configure the registry factory once and transfer ownership to the DAO.
+    ConfigureUserRegistry {
+        #[arg(long)]
+        user_registry_address: String,
+        #[arg(long)]
+        proxy_code_id: u64,
+        #[arg(long)]
+        service_handler: String,
+        #[arg(long)]
+        control_center_registry: String,
+        #[arg(long)]
+        owner: String,
+        #[clap(flatten)]
+        args: CliArgs,
+    },
     /// Instantiate a local Hydro control center with no vaults
     InstantiateLocalControlCenter {
         #[arg(long)]
@@ -322,9 +337,6 @@ pub enum CliCommand {
 
         #[arg(long)]
         user_registry_address: String,
-
-        #[arg(long)]
-        proxy_address: String,
 
         /// Send using BACKEND_SIGNING_MNEMONIC; otherwise prepare an unsigned message.
         #[arg(long)]

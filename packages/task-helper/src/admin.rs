@@ -38,6 +38,75 @@ pub async fn register_or_prepare(
     execute_request(ctx, address, msg, broadcast, true).await
 }
 
+pub async fn configure_user_registry(
+    ctx: &CliContext,
+    address: &str,
+    proxy_code_id: u64,
+    handler: &str,
+    centers: &str,
+    owner: &str,
+) -> Result<()> {
+    use app_contract_api::user_registry::msg::{ConfigResponse, ExecuteMsg, QueryMsg};
+    let address = ctx.parse_address(address).await?;
+    let owner = ctx.parse_address(owner).await?.to_string();
+    let handler = ctx.parse_address(handler).await?.to_string();
+    let centers = ctx.parse_address(centers).await?.to_string();
+    let query = ctx.query_client().await?;
+    let current: ConfigResponse = query.contract_smart(&address, &QueryMsg::Config {}).await?;
+    let mut messages = Vec::new();
+    if let Some(proxy) = current.proxy {
+        ensure!(
+            proxy.proxy_code_id == proxy_code_id
+                && proxy.service_handler.as_str() == handler
+                && proxy.control_center_registry.as_str() == centers,
+            "Registry factory configuration mismatch"
+        );
+    } else {
+        messages.push(ExecuteMsg::ConfigureProxy {
+            proxy_code_id,
+            service_handler: handler.clone(),
+            control_center_registry: centers.clone(),
+        });
+    }
+    if current.owner.as_str() != owner {
+        messages.push(ExecuteMsg::TransferOwnership {
+            owner: owner.clone(),
+        });
+    }
+    let mut record =
+        json!({"registry": address.to_string(), "owner": owner, "status": "already_configured"});
+    if !messages.is_empty() {
+        let client = ctx.signing_client().await?;
+        ensure!(
+            current.owner.as_str() == client.addr.to_string(),
+            "CLI wallet is not registry owner"
+        );
+        let tx = messages
+            .iter()
+            .map(|msg| proto_into_any(&client.contract_execute_msg(&address, vec![], msg)?))
+            .collect::<Result<Vec<_>>>()?;
+        let response = client.tx_builder().broadcast(tx).await?;
+        ensure!(
+            response.code == 0,
+            "Registry configuration transaction failed"
+        );
+        record["status"] = json!("configured");
+        record["tx_hash"] = json!(response.txhash);
+    }
+    let configured: ConfigResponse = query.contract_smart(&address, &QueryMsg::Config {}).await?;
+    let proxy = configured
+        .proxy
+        .ok_or_else(|| anyhow::anyhow!("Registry factory is not configured"))?;
+    ensure!(
+        configured.owner.as_str() == owner
+            && proxy.proxy_code_id == proxy_code_id
+            && proxy.service_handler.as_str() == handler
+            && proxy.control_center_registry.as_str() == centers,
+        "Registry configuration verification failed"
+    );
+    write_request(ctx, record).await
+}
+
 async fn execute_request(
     ctx: &CliContext,
     address: &str,

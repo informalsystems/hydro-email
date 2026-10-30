@@ -5,14 +5,30 @@ use sha2::{Digest, Sha256};
 
 #[cw_serde]
 pub struct InstantiateMsg {
+    /// Cold authority that configures the factory and rotates provisioning admins.
+    pub owner: String,
     pub admins: Vec<String>,
 }
 
 #[cw_serde]
+#[serde(deny_unknown_fields)]
+#[schemaifier(mute_warnings)]
 pub enum ExecuteMsg {
+    /// Create this user's deterministic proxy and register it atomically.
     RegisterUser {
         user_id: UserId,
-        proxy_address: String,
+    },
+    /// Owner-only, one-time setup after the service handler has been deployed.
+    ConfigureProxy {
+        proxy_code_id: u64,
+        service_handler: String,
+        control_center_registry: String,
+    },
+    UpdateAdmins {
+        admins: Vec<String>,
+    },
+    TransferOwnership {
+        owner: String,
     },
 }
 
@@ -21,6 +37,22 @@ pub enum ExecuteMsg {
 pub enum QueryMsg {
     #[returns(ProxyAddressResponse)]
     ProxyAddress { user_id: UserId },
+    #[returns(ConfigResponse)]
+    Config {},
+}
+
+#[cw_serde]
+pub struct ProxyConfig {
+    pub proxy_code_id: u64,
+    pub service_handler: Addr,
+    pub control_center_registry: Addr,
+}
+
+#[cw_serde]
+pub struct ConfigResponse {
+    pub owner: Addr,
+    pub admins: Vec<Addr>,
+    pub proxy: Option<ProxyConfig>,
 }
 
 #[cw_serde]
@@ -69,6 +101,21 @@ impl UserId {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// One canonical salt per SHA-256 user ID; reject uppercase hex aliases.
+    pub fn proxy_salt(&self) -> cosmwasm_std::StdResult<Vec<u8>> {
+        if self.0.len() != 64
+            || !self
+                .0
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        {
+            return Err(cosmwasm_std::StdError::msg(
+                "Expected a lowercase SHA-256 user ID",
+            ));
+        }
+        const_hex::decode(&self.0).map_err(cosmwasm_std::StdError::msg)
     }
 }
 

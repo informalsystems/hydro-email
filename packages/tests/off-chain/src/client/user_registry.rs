@@ -38,6 +38,7 @@ impl UserRegistryClient {
         let code_id = app_client.with_app_mut(|app| app.store_code(Box::new(contract)));
 
         let msg = app_contract_api::user_registry::msg::InstantiateMsg {
+            owner: app_client.admin().to_string(),
             admins: admins.iter().map(|a| a.to_string()).collect(),
         };
 

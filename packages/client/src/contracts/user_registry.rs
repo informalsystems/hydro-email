@@ -72,14 +72,9 @@ impl UserRegistryExecutor {
         self.inner.contract_exec(&self.addr, msg, funds).await
     }
 
-    pub async fn register_user_id(
-        &self,
-        user_id: UserId,
-        proxy_address: AnyAddr,
-    ) -> Result<(AnyTxResponse, UserId)> {
+    pub async fn register_user_id(&self, user_id: UserId) -> Result<(AnyTxResponse, UserId)> {
         let msg = ExecuteMsg::RegisterUser {
             user_id: user_id.clone(),
-            proxy_address: proxy_address.to_string(),
         };
 
         let tx_resp = self.exec(&msg, &[]).await?;

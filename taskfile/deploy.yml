@@ -41,7 +41,7 @@ tasks:
           FILENAME: "{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_INSTANTIATE}}"
       - task: local-control-center
       - task: contract-instantiate-control-center-registry
-      - task: proxy
+      - task: contract-configure-user-registry
       - echo ""
       - echo "Deployment artifacts prepared in {{.PATH_DEPLOYMENTS}}"
       - echo ""
@@ -535,6 +535,31 @@ tasks:
         --chain {{.CHAIN_KEY}}
       - echo "🚀 Instantiated User Registry contract and saved info to {{.FILENAME}}"
 
+  contract-configure-user-registry:
+    desc: "Configure the proxy factory once and hand registry ownership to the DAO"
+    preconditions:
+      - sh: '[ -n "{{.HYDRO_COMMITTEE_ADDRESS}}" ]'
+        msg: "Set HYDRO_COMMITTEE_ADDRESS for registry ownership"
+    vars:
+      REGISTRY:
+        sh: jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_USER_REGISTRY_INSTANTIATE}}"
+      PROXY_CODE_ID:
+        sh: jq -r '.code_id' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_PROXY_CODE_ID}}"
+      HANDLER:
+        sh: jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_SERVICE_HANDLER_INSTANTIATE}}"
+      CENTERS:
+        sh: jq -r '.address' "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_CONTROL_CENTER_REGISTRY_INSTANTIATE}}"
+    cmds:
+      - >
+        task helper-exec -- configure-user-registry
+        --user-registry-address {{.REGISTRY}}
+        --proxy-code-id {{.PROXY_CODE_ID}}
+        --service-handler {{.HANDLER}}
+        --control-center-registry {{.CENTERS}}
+        --owner {{.HYDRO_COMMITTEE_ADDRESS}}
+        --output-file user-registry-configure.json
+        --chain {{.CHAIN_KEY}}
+
   contract-instantiate-proxy:
     deps: [assert-account-exists]
     requires:
@@ -555,15 +580,12 @@ tasks:
       EMAIL_ADDRESS: "{{.EMAIL_ADDRESS | default .DEPLOY_REGISTER_USER_EMAIL}}"
       USER_REGISTRY_ADDRESS:
         sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_USER_REGISTRY_INSTANTIATE}}" | jq -r '.address'
-      PROXY_ADDRESS:
-        sh: cat "{{.PATH_DEPLOYMENTS}}/{{.DEPLOY_FILENAME_CONTRACT_PROXY_INSTANTIATE}}" | jq -r '.address'
     cmds:
       - echo "Registering user for {{.EMAIL_ADDRESS}}..."
       - >
         task helper-exec -- contract-register-user
         --email-address {{.EMAIL_ADDRESS}}
         --user-registry-address {{.USER_REGISTRY_ADDRESS}}
-        --proxy-address {{.PROXY_ADDRESS}}
         --chain {{.CHAIN_KEY}}
         {{if eq (.BROADCAST | default "false") "true"}}--broadcast{{end}}
       - echo "Prepared registration for {{.EMAIL_ADDRESS}} on User Registry contract"

@@ -40,6 +40,7 @@ impl CliContext {
             CliCommand::InstantiateControlCenterRegistry { args, .. } => args,
             CliCommand::InstantiateLocalControlCenter { args, .. } => args,
             CliCommand::InstantiateUserRegistry { args, .. } => args,
+            CliCommand::ConfigureUserRegistry { args, .. } => args,
             CliCommand::UploadComponent { args, .. } => args,
             CliCommand::UploadService { args, .. } => args,
             CliCommand::AssertAccountExists { args, .. } => args,

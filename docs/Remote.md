@@ -38,7 +38,10 @@ task deploy:all
 The ordered flow is:
 
 1. Deploy contracts with temporary CLI ownership of both middleware contracts.
-   The user registry instead receives the dedicated API wallet as its sole admin.
+   The user registry receives the dedicated API wallet as its provisioning admin.
+   After the handler and control-center registry exist, configure its immutable
+   proxy factory and transfer ownership to the committee. The CLI can no longer
+   manage it after that handoff; the DAO can rotate provisioning admins.
 2. Upload the service definition and set its URI/quorum using CLI authority.
 3. Load the service on each operator, obtain its public signing key, and register
    that key and its voting weight on-chain using the CLI wallet.
@@ -93,18 +96,26 @@ A constituent wallet cannot sign as the whole DAO/multisig.
 ## Optional sample user
 
 Normal users register through the API, which signs with its existing
-`BACKEND_SIGNING_MNEMONIC`. To prepare a sample email/proxy mapping from deployment
-records, set `DEPLOY_REGISTER_USER_EMAIL` and run:
+`BACKEND_SIGNING_MNEMONIC`. To prepare a sample atomic proxy registration, set `DEPLOY_REGISTER_USER_EMAIL` and run:
 
 ```bash
 task deploy:user
 ```
 
-This prepares an unsigned registration request. Explicitly running
+This prepares an unsigned `RegisterUser { user_id }` request. The registry chooses
+and creates the proxy; no manual proxy deployment or address argument is needed. Explicitly running
 `task deploy:user BROADCAST=true` uses `BACKEND_SIGNING_MNEMONIC`, whose public
 address must be the user-registry admin. This optional task requires the API
 credential locally; infrastructure deployment never reads it or grants the CLI
 wallet user-registration permissions automatically.
+
+When deploying step by step, run `task deploy:contract-configure-user-registry`
+after deploying the handler and control-center registry and before registering
+users or starting backend provisioning. This configures the factory and transfers
+user-registry ownership to `HYDRO_COMMITTEE_ADDRESS` in one transaction. See
+[Backend provisioning](Backend.md#registration-provisioning-and-failures) for the
+single-transaction flow and the owner-only `update_admins` procedure described
+above that section for rotating the backend signer.
 
 ## Start WAVS and IPFS on the deployment host
 

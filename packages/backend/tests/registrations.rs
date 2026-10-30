@@ -121,8 +121,8 @@ async fn concurrent_attempts_and_status_resets_cannot_resubmit(pool: PgPool) {
     let first = admit(&store, "alice@example.com").await;
     let job = store.get(&first).await.unwrap().unwrap();
     let (a, b) = tokio::join!(
-        store.begin_attempt(&job, "queued", "creating_proxy", "proxy-address"),
-        store.begin_attempt(&job, "queued", "creating_proxy", "proxy-address"),
+        store.begin_attempt(&job, "proxy-address"),
+        store.begin_attempt(&job, "proxy-address"),
     );
     assert_ne!(a.unwrap(), b.unwrap());
     let total: i64 = sqlx::query_scalar("SELECT count(*) FROM registration_attempts")
@@ -133,13 +133,10 @@ async fn concurrent_attempts_and_status_resets_cannot_resubmit(pool: PgPool) {
     let attempted = &first;
     // Even accidental/manual state restoration cannot permit a second attempt.
     store
-        .transition(&job, "queued", None, None, None, None)
+        .transition(&job, "queued", None, None, None)
         .await
         .unwrap();
-    assert!(!store
-        .begin_attempt(&job, "queued", "creating_proxy", "proxy-address")
-        .await
-        .unwrap());
+    assert!(!store.begin_attempt(&job, "proxy-address").await.unwrap());
     assert_eq!(
         store.get(attempted).await.unwrap().unwrap().status,
         "queued"
@@ -148,19 +145,18 @@ async fn concurrent_attempts_and_status_resets_cannot_resubmit(pool: PgPool) {
 
 #[derive(Default)]
 struct FakeChain {
-    creates: AtomicUsize,
     registers: AtomicUsize,
     registered: AtomicBool,
     proxy_deployed: AtomicBool,
-    create_times_out: AtomicBool,
-    create_lands_on_timeout: bool,
+    register_lands_on_timeout: bool,
     register_rejected: AtomicBool,
     invalid_proxy: bool,
-    register_times_out: bool,
+    register_times_out: AtomicBool,
     confirmation_pending: bool,
     transaction_fails: AtomicBool,
     lookup_fails: bool,
     proxy_query_fails: AtomicBool,
+    wrong_mapping: bool,
 }
 
 #[async_trait]
@@ -169,10 +165,14 @@ impl RegistrationChain for FakeChain {
         if self.lookup_fails {
             anyhow::bail!("RPC unavailable");
         }
-        Ok(self
-            .registered
-            .load(Ordering::SeqCst)
-            .then(|| "proxy-address".into()))
+        Ok(self.registered.load(Ordering::SeqCst).then(|| {
+            if self.wrong_mapping {
+                "other-users-proxy"
+            } else {
+                "proxy-address"
+            }
+            .into()
+        }))
     }
     async fn proxy_address(&self, _id: &str) -> Result<String> {
         Ok("proxy-address".into())
@@ -190,27 +190,22 @@ impl RegistrationChain for FakeChain {
             ProxyState::Missing
         })
     }
-    async fn create_proxy(&self, _id: &str) -> Result<Broadcast> {
-        self.creates.fetch_add(1, Ordering::SeqCst);
-        if self.create_times_out.load(Ordering::SeqCst) {
-            self.proxy_deployed
-                .store(self.create_lands_on_timeout, Ordering::SeqCst);
-            anyhow::bail!("ambiguous network failure");
-        }
-        if !self.transaction_fails.load(Ordering::SeqCst) && !self.confirmation_pending {
-            self.proxy_deployed.store(true, Ordering::SeqCst);
-        }
-        Ok(Broadcast::Accepted("create-hash".into()))
-    }
-    async fn register(&self, _id: &str, _proxy: &str) -> Result<Broadcast> {
+    async fn register(&self, _id: &str) -> Result<Broadcast> {
         self.registers.fetch_add(1, Ordering::SeqCst);
         if self.register_rejected.load(Ordering::SeqCst) {
             return Ok(Broadcast::Rejected(anyhow::anyhow!(
                 "registration rejected"
             )));
         }
-        self.registered.store(true, Ordering::SeqCst);
-        if self.register_times_out {
+        let timeout = self.register_times_out.load(Ordering::SeqCst);
+        if (!timeout || self.register_lands_on_timeout)
+            && !self.transaction_fails.load(Ordering::SeqCst)
+            && !self.confirmation_pending
+        {
+            self.proxy_deployed.store(true, Ordering::SeqCst);
+            self.registered.store(true, Ordering::SeqCst);
+        }
+        if timeout {
             anyhow::bail!("broadcast response lost");
         }
         Ok(Broadcast::Accepted("register-hash".into()))
@@ -243,17 +238,13 @@ async fn provisions_once_and_persists_each_step(pool: PgPool) {
     let id = admit(&store, "alice@example.com").await;
     let chain = Arc::new(FakeChain::default());
     let worker = worker(store, chain.clone());
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
-    assert_eq!(step(&worker, &id).await, "proxy_created");
-    assert_eq!(step(&worker, &id).await, "registration_pending");
+    assert_eq!(step(&worker, &id).await, "pending");
     assert_eq!(step(&worker, &id).await, "completed");
     assert_eq!(step(&worker, &id).await, "completed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 1);
     assert_eq!(chain.registers.load(Ordering::SeqCst), 1);
     let record = worker.store.get(&id).await.unwrap().unwrap();
     assert_eq!(record.proxy_address.as_deref(), Some("proxy-address"));
-    assert_eq!(record.create_tx_hash.as_deref(), Some("create-hash"));
-    assert_eq!(record.register_tx_hash.as_deref(), Some("register-hash"));
+    assert_eq!(record.tx_hash.as_deref(), Some("register-hash"));
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -263,21 +254,19 @@ async fn timeout_or_crash_never_resubmits_and_blocks_new_wallet_use(pool: PgPool
     let id = admit(&store, "alice@example.com").await;
     let second = admit(&store, "bob@example.com").await;
     let chain = Arc::new(FakeChain {
-        create_times_out: AtomicBool::new(true),
+        register_times_out: AtomicBool::new(true),
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
     assert_eq!(step(&worker, &id).await, "unknown");
     assert_eq!(step(&worker, &id).await, "unknown");
     assert_eq!(step(&worker, &second).await, "queued");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 1);
     // Simulate a restart after intent was recorded but before a hash was saved.
     worker
         .store
         .transition(
             &worker.store.get(&second).await.unwrap().unwrap(),
-            "creating_proxy",
-            None,
+            "submitting",
             None,
             None,
             None,
@@ -285,7 +274,7 @@ async fn timeout_or_crash_never_resubmits_and_blocks_new_wallet_use(pool: PgPool
         .await
         .unwrap();
     assert_eq!(step(&worker, &second).await, "unknown");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 1);
+    assert_eq!(chain.registers.load(Ordering::SeqCst), 1);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -298,16 +287,15 @@ async fn chain_failure_waits_for_a_new_registration_request(pool: PgPool) {
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
+    assert_eq!(step(&worker, &id).await, "pending");
     assert_eq!(step(&worker, &id).await, "failed");
     assert_eq!(step(&worker, &id).await, "failed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 1);
-    assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
+    assert_eq!(chain.registers.load(Ordering::SeqCst), 1);
 }
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires isolated Postgres"]
-async fn failed_creation_can_be_retried_and_completed(pool: PgPool) {
+async fn failed_atomic_registration_can_be_retried_and_completed(pool: PgPool) {
     let store = store(pool);
     let id = admit(&store, "alice@example.com").await;
     let chain = Arc::new(FakeChain {
@@ -315,7 +303,7 @@ async fn failed_creation_can_be_retried_and_completed(pool: PgPool) {
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
+    assert_eq!(step(&worker, &id).await, "pending");
     assert_eq!(step(&worker, &id).await, "failed");
     chain.transaction_fails.store(false, Ordering::SeqCst);
     assert!(matches!(
@@ -326,11 +314,8 @@ async fn failed_creation_can_be_retried_and_completed(pool: PgPool) {
             .unwrap(),
         Admission::Resumed(_)
     ));
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
-    assert_eq!(step(&worker, &id).await, "proxy_created");
-    assert_eq!(step(&worker, &id).await, "registration_pending");
+    assert_eq!(step(&worker, &id).await, "pending");
     assert_eq!(step(&worker, &id).await, "completed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 2);
     assert_eq!(
         worker.store.get(&id).await.unwrap().unwrap().attempt_number,
         2
@@ -340,12 +325,12 @@ async fn failed_creation_can_be_retried_and_completed(pool: PgPool) {
             .fetch_one(&worker.store.pool)
             .await
             .unwrap();
-    assert_eq!(hashes, 3);
+    assert_eq!(hashes, 2);
 }
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires isolated Postgres"]
-async fn retry_reuses_a_proxy_when_only_registry_registration_failed(pool: PgPool) {
+async fn rejected_atomic_registration_can_be_retried(pool: PgPool) {
     let store = store(pool);
     let id = admit(&store, "alice@example.com").await;
     let chain = Arc::new(FakeChain {
@@ -353,8 +338,6 @@ async fn retry_reuses_a_proxy_when_only_registry_registration_failed(pool: PgPoo
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
-    assert_eq!(step(&worker, &id).await, "proxy_created");
     assert_eq!(step(&worker, &id).await, "failed");
     chain.register_rejected.store(false, Ordering::SeqCst);
     assert!(matches!(
@@ -365,29 +348,25 @@ async fn retry_reuses_a_proxy_when_only_registry_registration_failed(pool: PgPoo
             .unwrap(),
         Admission::Resumed(_)
     ));
-    assert_eq!(step(&worker, &id).await, "proxy_created");
-    assert_eq!(step(&worker, &id).await, "registration_pending");
+    assert_eq!(step(&worker, &id).await, "pending");
     assert_eq!(step(&worker, &id).await, "completed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 1);
     assert_eq!(chain.registers.load(Ordering::SeqCst), 2);
 }
 
 #[sqlx::test(migrations = "./migrations")]
 #[ignore = "requires isolated Postgres"]
-async fn unknown_creation_recovers_an_existing_proxy_without_its_hash(pool: PgPool) {
+async fn unknown_registration_recovers_mapping_without_its_hash(pool: PgPool) {
     let store = store(pool);
     let id = admit(&store, "alice@example.com").await;
     let chain = Arc::new(FakeChain {
-        create_times_out: AtomicBool::new(true),
-        create_lands_on_timeout: true,
+        register_times_out: AtomicBool::new(true),
+        register_lands_on_timeout: true,
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
     assert_eq!(step(&worker, &id).await, "unknown");
-    assert_eq!(step(&worker, &id).await, "proxy_created");
-    assert_eq!(step(&worker, &id).await, "registration_pending");
     assert_eq!(step(&worker, &id).await, "completed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 1);
+    assert_eq!(chain.registers.load(Ordering::SeqCst), 1);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -396,7 +375,7 @@ async fn concurrent_retries_resume_once_and_stale_updates_cannot_overwrite_them(
     let store = store(pool);
     let id = admit(&store, "alice@example.com").await;
     let chain = Arc::new(FakeChain {
-        create_times_out: AtomicBool::new(true),
+        register_times_out: AtomicBool::new(true),
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
@@ -422,18 +401,16 @@ async fn concurrent_retries_resume_once_and_stale_updates_cannot_overwrite_them(
     assert_eq!(resumed, 1);
     worker
         .store
-        .transition(&stale, "failed", None, None, None, Some("stale_failure"))
+        .transition(&stale, "failed", None, None, Some("stale_failure"))
         .await
         .unwrap();
     let job = worker.store.get(&id).await.unwrap().unwrap();
     assert_eq!(job.status, "queued");
     assert_eq!(job.attempt_number, 2);
-    chain.create_times_out.store(false, Ordering::SeqCst);
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
-    assert_eq!(step(&worker, &id).await, "proxy_created");
-    assert_eq!(step(&worker, &id).await, "registration_pending");
+    chain.register_times_out.store(false, Ordering::SeqCst);
+    assert_eq!(step(&worker, &id).await, "pending");
     assert_eq!(step(&worker, &id).await, "completed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 2);
+    assert_eq!(chain.registers.load(Ordering::SeqCst), 2);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -447,14 +424,7 @@ async fn retries_consume_quota_but_active_and_completed_requests_do_not(pool: Pg
         Admission::Existing(_)
     ));
     store
-        .transition(
-            &job,
-            "failed",
-            None,
-            None,
-            None,
-            Some("chain_transaction_failed"),
-        )
+        .transition(&job, "failed", None, None, Some("chain_transaction_failed"))
         .await
         .unwrap();
     assert!(matches!(
@@ -467,14 +437,7 @@ async fn retries_consume_quota_but_active_and_completed_requests_do_not(pool: Pg
     ));
     let current = store.get(&id).await.unwrap().unwrap();
     store
-        .transition(
-            &current,
-            "completed",
-            Some("proxy-address"),
-            None,
-            None,
-            None,
-        )
+        .transition(&current, "completed", Some("proxy-address"), None, None)
         .await
         .unwrap();
     assert!(matches!(
@@ -495,7 +458,6 @@ async fn refuses_existing_proxy_with_unexpected_configuration(pool: PgPool) {
     });
     let worker = worker(store, chain.clone());
     assert_eq!(step(&worker, &id).await, "failed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 0);
     assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
 }
 
@@ -510,7 +472,6 @@ async fn failed_lookup_does_not_trigger_creation(pool: PgPool) {
     });
     let worker = worker(store, chain.clone());
     assert_eq!(step(&worker, &id).await, "queued");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 0);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -525,7 +486,6 @@ async fn imports_existing_onchain_registration_without_spending(pool: PgPool) {
     });
     let worker = worker(store, chain.clone());
     assert_eq!(step(&worker, &id).await, "completed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 0);
     assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
 }
 
@@ -550,7 +510,6 @@ async fn refuses_imported_mapping_to_invalid_or_missing_proxy(pool: PgPool) {
             saved.error_code.as_deref(),
             Some("proxy_configuration_mismatch")
         );
-        assert_eq!(chain.creates.load(Ordering::SeqCst), 0);
         assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
     }
 }
@@ -573,7 +532,33 @@ async fn imported_mapping_query_outage_defers_then_recovers(pool: PgPool) {
     assert!(saved.proxy_address.is_none());
     chain.proxy_query_fails.store(false, Ordering::SeqCst);
     assert_eq!(step(&worker, &id).await, "completed");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
+}
+
+#[sqlx::test(migrations = "./migrations")]
+#[ignore = "requires isolated Postgres"]
+async fn imported_mapping_must_match_this_users_factory_address(pool: PgPool) {
+    let store = store(pool);
+    let id = admit(&store, "alice@example.com").await;
+    let chain = Arc::new(FakeChain {
+        registered: AtomicBool::new(true),
+        proxy_deployed: AtomicBool::new(true),
+        wrong_mapping: true,
+        ..Default::default()
+    });
+    let worker = worker(store, chain.clone());
+    assert_eq!(step(&worker, &id).await, "failed");
+    assert_eq!(
+        worker
+            .store
+            .get(&id)
+            .await
+            .unwrap()
+            .unwrap()
+            .error_code
+            .as_deref(),
+        Some("registry_mapping_conflict")
+    );
     assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
 }
 
@@ -583,12 +568,11 @@ async fn lost_registration_response_reconciles_without_rebroadcast(pool: PgPool)
     let store = store(pool);
     let id = admit(&store, "alice@example.com").await;
     let chain = Arc::new(FakeChain {
-        register_times_out: true,
+        register_times_out: AtomicBool::new(true),
+        register_lands_on_timeout: true,
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
-    assert_eq!(step(&worker, &id).await, "proxy_created");
     assert_eq!(step(&worker, &id).await, "unknown");
     assert_eq!(step(&worker, &id).await, "completed");
     assert_eq!(chain.registers.load(Ordering::SeqCst), 1);
@@ -604,11 +588,10 @@ async fn known_hash_stays_pending_without_a_second_attempt(pool: PgPool) {
         ..Default::default()
     });
     let worker = worker(store, chain.clone());
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
-    assert_eq!(step(&worker, &id).await, "proxy_pending");
-    assert_eq!(chain.creates.load(Ordering::SeqCst), 1);
-    assert_eq!(chain.registers.load(Ordering::SeqCst), 0);
+    assert_eq!(step(&worker, &id).await, "pending");
+    assert_eq!(step(&worker, &id).await, "pending");
+    assert_eq!(step(&worker, &id).await, "pending");
+    assert_eq!(chain.registers.load(Ordering::SeqCst), 1);
 }
 
 #[sqlx::test(migrations = "./migrations")]
@@ -761,7 +744,7 @@ async fn email_lookup_is_authenticated_normalized_and_read_only(pool: PgPool) {
     for status in ["queued", "completed", "failed", "unknown"] {
         let job = store.get(&id).await.unwrap().unwrap();
         store
-            .transition(&job, status, Some("proxy-address"), None, None, None)
+            .transition(&job, status, Some("proxy-address"), None, None)
             .await
             .unwrap();
         let before = serde_json::to_value(store.get(&id).await.unwrap().unwrap()).unwrap();

@@ -29,5 +29,5 @@ async fn integration() {
         vec![service_handler.address.clone()],
     );
 
-    test_integration(service_handler, proxy, wrong_proxy).await;
+    test_integration(service_handler, proxy, wrong_proxy, proxy_code_id).await;
 }
