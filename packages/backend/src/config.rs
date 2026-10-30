@@ -14,7 +14,6 @@ pub struct Config {
     pub provisioning_enabled: bool,
     pub reconciliation_interval_seconds: u32,
     pub reconciliation_grace_seconds: u32,
-    pub proxy_code_id: u64,
     pub service_handler_address: String,
     pub control_center_registry: String,
     pub signing_mnemonic: String,
@@ -36,7 +35,6 @@ impl Config {
                 .parse()?,
             reconciliation_grace_seconds: value("BACKEND_RECONCILIATION_GRACE_SECONDS", "900")
                 .parse()?,
-            proxy_code_id: value("BACKEND_PROXY_CODE_ID", "0").parse()?,
             service_handler_address: required("BACKEND_SERVICE_HANDLER_ADDRESS")?,
             control_center_registry: value("BACKEND_CONTROL_CENTER_REGISTRY_ADDRESS", ""),
             signing_mnemonic: value("BACKEND_SIGNING_MNEMONIC", ""),
@@ -54,10 +52,6 @@ impl Config {
             "Reconciliation interval and grace period must be positive"
         );
         if provisioning_enabled {
-            ensure!(
-                config.proxy_code_id > 0,
-                "BACKEND_PROXY_CODE_ID is required for provisioning"
-            );
             ensure!(
                 !config.control_center_registry.trim().is_empty(),
                 "BACKEND_CONTROL_CENTER_REGISTRY_ADDRESS is required for provisioning"

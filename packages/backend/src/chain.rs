@@ -59,10 +59,6 @@ impl CosmosChain {
             .chain_config
             .parse_address(&config.registry_address)?;
         client.querier.contract_info(&registry).await?;
-        client
-            .querier
-            .contract_code_info(config.proxy_code_id)
-            .await?;
         for address in [
             &config.service_handler_address,
             &config.control_center_registry,
@@ -96,16 +92,19 @@ impl CosmosChain {
         let proxy = registry_config
             .proxy
             .ok_or_else(|| anyhow::anyhow!("Registry proxy factory is not configured"))?;
+        client
+            .querier
+            .contract_code_info(proxy.proxy_code_id)
+            .await?;
         ensure!(
-            proxy.proxy_code_id == config.proxy_code_id
-                && proxy.service_handler.as_str() == config.service_handler_address
+            proxy.service_handler.as_str() == config.service_handler_address
                 && proxy.control_center_registry.as_str() == config.control_center_registry,
             "Backend proxy configuration does not match the registry factory"
         );
         Ok(Self {
             client,
             registry,
-            code_id: config.proxy_code_id,
+            code_id: proxy.proxy_code_id,
             service_handler: config.service_handler_address.clone(),
             control_center_registry: config.control_center_registry.clone(),
         })

@@ -45,7 +45,6 @@ Provisioning is **off by default**. Registration requests are saved as queued
 jobs without broadcasting transactions. Action reconciliation still performs
 read-only chain queries. To enable registration provisioning, configure:
 
-- `BACKEND_PROXY_CODE_ID`: existing uploaded Hydro proxy code ID.
 - `BACKEND_SERVICE_HANDLER_ADDRESS`: proxy application admin.
 - `BACKEND_CONTROL_CENTER_REGISTRY_ADDRESS`: deployed Hydro control-center registry address.
 - `BACKEND_SIGNING_MNEMONIC`: a funded signer authorized by the registry.
@@ -67,6 +66,7 @@ owns the user registry, configures its proxy factory once after deploying the ha
 and control-center registry, then transfers ownership to `HYDRO_COMMITTEE_ADDRESS`.
 The backend checks its admin authorization and the immutable factory configuration
 through the registry's `Config` query at startup. No startup transaction is sent.
+The proxy code ID is read directly from that query; no backend code-ID setting is needed.
 
 The provisioning signer can request a user ID, but cannot choose its proxy address,
 code, permissions, or control-center registry. The user registry creates the proxy
