@@ -20,6 +20,8 @@ use crate::{
     error::{AppError, AppResult},
 };
 
+const MAX_ALIGNED_SIGNATURES: usize = 3;
+
 pub async fn verify_email(email: &EmailMessage) -> AppResult<()> {
     verify_with_resolver(email, Arc::new(dns::DkimDns)).await
 }
@@ -72,7 +74,7 @@ async fn verify_with_resolver(email: &EmailMessage, lookup: Arc<dyn Lookup>) -> 
 
     // Inspect signature metadata first. Cryptographic verification below checks
     // that at least one signature satisfying our policy actually passes.
-    let mut aligned = false;
+    let mut aligned = 0;
     for header in parsed
         .headers
         .iter()
@@ -100,7 +102,10 @@ async fn verify_with_resolver(email: &EmailMessage, lookup: Arc<dyn Lookup>) -> 
         if !tag("d").is_some_and(|domain| domain.eq_ignore_ascii_case(&from_domain)) {
             continue;
         }
-        aligned = true;
+        aligned += 1;
+        if aligned > MAX_ALIGNED_SIGNATURES {
+            return Err(InvalidEmail::TooManySignatures.into());
+        }
         // Reject the entire email if its mailbox address contains whitespace,
         // quotes, or backslashes AND this signature uses relaxed header rules.
         // For example, these could be mailboxes belonging to different users:
@@ -136,7 +141,7 @@ async fn verify_with_resolver(email: &EmailMessage, lookup: Arc<dyn Lookup>) -> 
             return Err(InvalidEmail::AuthenticationFailed.into());
         }
     }
-    if !aligned {
+    if aligned == 0 {
         return Err(InvalidEmail::AuthenticationFailed.into());
     }
 

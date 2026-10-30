@@ -183,7 +183,9 @@ impl<S: CacheStore> ProcessedEmails<S> {
                 Some(Some(retry)) => retry.retry_after <= now,
                 Some(None) => false,
             })
-            .min())
+            // Fresh mail first, then due retries; retain UID order within each
+            // group so older retries cannot repeatedly jump ahead of new mail.
+            .min_by_key(|id| (self.snapshot.contains_key(id), *id)))
     }
 
     // Persist before fetch/parsing so traps and unclassified errors cannot pin
@@ -297,6 +299,30 @@ mod tests {
     }
 
     #[test]
+    fn fresh_mail_precedes_thirty_due_dns_retries_then_retries_resume() -> Result<()> {
+        let store = MemoryStore::default();
+        for uid in 1..=30 {
+            ProcessedEmails::load(store.clone())?.defer_at(id(1, uid), 1000)?;
+        }
+        let mailbox: HashSet<_> = (1..=31).collect();
+        let cache = ProcessedEmails::load(store.clone())?;
+        // All thirty retries are due, but none can jump ahead of fresh UID 31.
+        assert_eq!(cache.next_unread_at(1, &mailbox, 1300)?, Some(id(1, 31)));
+        cache.remember(id(1, 31))?;
+        // With no fresh mail left, process retries oldest first.
+        for uid in 1..=30 {
+            let cache = ProcessedEmails::load(store.clone())?;
+            assert_eq!(cache.next_unread_at(1, &mailbox, 1300)?, Some(id(1, uid)));
+            cache.remember(id(1, uid))?;
+        }
+        assert_eq!(
+            ProcessedEmails::load(store)?.next_unread_at(1, &mailbox, 1300)?,
+            None
+        );
+        Ok(())
+    }
+
+    #[test]
     fn unfinished_attempts_back_off_allow_newer_mail_and_exhaust_the_budget() -> Result<()> {
         let store = MemoryStore::default();
         let poison = id(1, 10);
@@ -304,10 +330,7 @@ mod tests {
             let now = 1000 + u64::from(attempt) * 30;
             // Reload between attempts to model a failed invocation, including a trap.
             let cache = ProcessedEmails::load(store.clone())?;
-            assert_eq!(
-                cache.next_unread_at(1, &unread(&[10, 11]), now)?,
-                Some(poison)
-            );
+            assert_eq!(cache.next_unread_at(1, &unread(&[10]), now)?, Some(poison));
             assert!(cache.begin_processing_at(poison, now)?);
             let next = ProcessedEmails::load(store.clone())?;
             assert_eq!(
@@ -438,7 +461,7 @@ mod tests {
         for delay in [30, 60, 120, 240, 300, 300] {
             let cache = ProcessedEmails::load(store.clone())?;
             assert_eq!(
-                cache.next_unread_at(1, &unread(&[10, 11]), now)?,
+                cache.next_unread_at(1, &unread(&[10]), now)?,
                 Some(id(1, 10))
             );
             cache.defer_at(id(1, 10), now)?;

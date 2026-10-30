@@ -549,6 +549,8 @@ async fn main() {
             component_operator_email_reader_cid_file,
             component_aggregator_submitter_cid_file,
             trigger_cron_schedule,
+            operator_fuel_limit,
+            operator_time_limit_seconds,
             middleware_instantiation_file,
             activate,
         } => {
@@ -617,8 +619,8 @@ async fn main() {
                     raw_sockets: true,
                     dns_resolution: true,
                 },
-                fuel_limit: None,
-                time_limit_seconds: None,
+                fuel_limit: Some(operator_fuel_limit),
+                time_limit_seconds: Some(operator_time_limit_seconds),
                 config: [
                     ("CHAIN".to_string(), ctx.chain_key().to_string()),
                     (

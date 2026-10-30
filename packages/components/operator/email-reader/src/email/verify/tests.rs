@@ -215,3 +215,55 @@ fn opaque_multipart_body_remains_authenticated_and_commands_are_unchanged() {
         assert_rejected(&signed.replace("Test body", "changed body"));
     }
 }
+
+#[derive(Default)]
+struct CountingDns(std::sync::atomic::AtomicUsize);
+
+impl Lookup for CountingDns {
+    fn lookup_txt<'a>(&'a self, name: &'a str) -> BoxFuture<'a, Result<Vec<String>, DKIMError>> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            TestDns.lookup_txt(name).await
+        })
+    }
+}
+
+#[test]
+fn excess_aligned_signatures_are_rejected_before_any_dns_lookup() {
+    let header = signature(RAW, "example.com", "test", HEADERS);
+    let raw = format!(
+        "{}{RAW}",
+        format!("{header}\r\n").repeat(MAX_ALIGNED_SIGNATURES + 1)
+    );
+    let email = EmailMessage::parse_imap(raw.as_bytes()).unwrap();
+    let dns = Arc::new(CountingDns::default());
+    let result = futures::executor::block_on(verify_with_resolver(&email, dns.clone()));
+    assert!(matches!(
+        result,
+        Err(AppError::InvalidEmail(InvalidEmail::TooManySignatures))
+    ));
+    assert_eq!(dns.0.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn signature_limit_allows_valid_mail_and_bounds_lookup_outages() {
+    for selector in ["test", "down"] {
+        let aligned = signature(RAW, "example.com", selector, HEADERS);
+        let unrelated = signature(RAW, "other.example", "test", HEADERS);
+        let raw = format!(
+            "{}{}{RAW}",
+            format!("{unrelated}\r\n").repeat(5),
+            format!("{aligned}\r\n").repeat(MAX_ALIGNED_SIGNATURES)
+        );
+        let email = EmailMessage::parse_imap(raw.as_bytes()).unwrap();
+        let dns = Arc::new(CountingDns::default());
+        let result = futures::executor::block_on(verify_with_resolver(&email, dns.clone()));
+        if selector == "test" {
+            result.unwrap();
+            assert_eq!(dns.0.load(Ordering::Relaxed), 1);
+        } else {
+            assert!(matches!(result, Err(AppError::VerificationUnavailable)));
+            assert_eq!(dns.0.load(Ordering::Relaxed), MAX_ALIGNED_SIGNATURES);
+        }
+    }
+}

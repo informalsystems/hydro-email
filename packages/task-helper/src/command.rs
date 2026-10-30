@@ -199,6 +199,14 @@ pub enum CliCommand {
         #[arg(long)]
         trigger_cron_schedule: String,
 
+        /// Maximum WASM compute per email-reader invocation.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        operator_fuel_limit: u64,
+
+        /// Maximum wall-clock seconds per email-reader invocation.
+        #[arg(long, value_parser = clap::value_parser!(u64).range(1..))]
+        operator_time_limit_seconds: u64,
+
         #[arg(long)]
         ipfs_kind: IpfsKind,
 
