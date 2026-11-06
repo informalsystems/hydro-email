@@ -20,6 +20,8 @@ pub struct Registration {
     pub proxy_address: Option<String>,
     pub tx_hash: Option<String>,
     pub error_code: Option<String>,
+    pub activated_at: Option<DateTime<Utc>>,
+    pub activation_error_code: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

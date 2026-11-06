@@ -82,6 +82,21 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                 let (email, event_id_salt) = match prepared {
                     Ok(prepared) => prepared,
                     Err(error::AppError::InvalidEmail(reason)) => {
+                        if let Ok(email) = &fetched.message {
+                            if email.is_activation() && email.sender_domain().is_ok() {
+                                backend::activate(
+                                    &backend,
+                                    &chain,
+                                    &handler,
+                                    UserId::new_email_address(&email.original_sender).as_str(),
+                                    fetched.id,
+                                    Some(reason),
+                                    &fetched.cache,
+                                )
+                                .await?;
+                                continue;
+                            }
+                        }
                         backend::reject(
                             &backend,
                             &chain,
@@ -103,6 +118,19 @@ async fn inner(trigger_action: TriggerAction) -> anyhow::Result<Vec<WasmResponse
                     }
                     Err(error) => return Err(error.into()),
                 };
+                if email.is_activation() {
+                    backend::activate(
+                        &backend,
+                        &chain,
+                        &handler,
+                        UserId::new_email_address(&email.original_sender).as_str(),
+                        fetched.id,
+                        None,
+                        &fetched.cache,
+                    )
+                    .await?;
+                    continue;
+                }
                 let payload = CustomExecuteMsg::Email(UserIdEmail {
                     from: UserId::new_email_address(&email.original_sender),
                     subject: email.subject.clone().unwrap_or_default(),

@@ -1,5 +1,6 @@
 pub mod action_chain;
 pub mod action_store;
+pub mod activation_store;
 pub mod api;
 pub mod chain;
 pub mod config;

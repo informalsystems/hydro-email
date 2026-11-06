@@ -15,6 +15,7 @@ use subtle::ConstantTimeEq;
 
 use crate::{
     action_store::{ActionOutcome, ActionResult, ActionStore, CreateAction, UpdateAction},
+    activation_store::{ActivationReport, ReportActivation},
     mailbox_store::{valid_error_code, CreateRejection, MailboxMessageIdentity},
     registration_store::{Admission, RegistrationStore},
 };
@@ -34,6 +35,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/v1/registrations", post(register))
         .route("/v1/registrations/lookup", get(lookup_registration))
         .route("/v1/registrations/{user_id}", get(status))
+        .route(
+            "/v1/registrations/{user_id}/activation",
+            post(report_activation),
+        )
         .route("/v1/mailbox-rejections", post(reject_mailbox_message))
         .route("/v1/actions", post(create_action).get(list_actions))
         .route("/v1/actions/{id}", get(action_details))
@@ -120,6 +125,32 @@ fn is_hex_id(value: &str, length: usize) -> bool {
         && value
             .bytes()
             .all(|v| v.is_ascii_hexdigit() && !v.is_ascii_uppercase())
+}
+
+async fn report_activation(
+    State(state): State<Arc<ApiState>>,
+    Path(user_id): Path<String>,
+    Json(input): Json<ActivationReport>,
+) -> Result<Response, ApiError> {
+    if !is_hex_id(&user_id, 64) || !input.is_valid() {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "invalid_activation_report",
+        ));
+    }
+    match state
+        .store
+        .report_activation(&state.actions.service_handler_address, &user_id, &input)
+        .await
+        .map_err(internal)?
+    {
+        ReportActivation::Created(row) => Ok((StatusCode::CREATED, Json(row)).into_response()),
+        ReportActivation::Existing(row) => Ok(Json(row).into_response()),
+        ReportActivation::NotFound => {
+            Err(ApiError(StatusCode::NOT_FOUND, "registration_not_found"))
+        }
+        ReportActivation::Conflict => Err(ApiError(StatusCode::CONFLICT, "activation_conflict")),
+    }
 }
 
 async fn create_action(
