@@ -38,6 +38,8 @@ pub enum InvalidEmail {
     SubjectInvalid,
     #[error("email_identity_missing")]
     IdentityMissing,
+    #[error("activation_registration_missing")]
+    ActivationRegistrationMissing,
 }
 
 impl InvalidEmail {
@@ -117,6 +119,9 @@ impl EmailMessage {
     }
 
     pub fn validate_subject(&self) -> Result<(), InvalidEmail> {
+        if self.is_activation() {
+            return Ok(());
+        }
         let subject = self
             .subject
             .as_deref()
@@ -124,6 +129,12 @@ impl EmailMessage {
         app_contract_api::proxy::ProxyExecuteMsg::from_email_subject(subject)
             .map(|_| ())
             .map_err(|_| InvalidEmail::SubjectInvalid)
+    }
+
+    pub fn is_activation(&self) -> bool {
+        self.subject
+            .as_deref()
+            .is_some_and(|subject| subject.trim().eq_ignore_ascii_case("activate"))
     }
 
     pub fn event_id_salt(&self) -> Result<Vec<u8>, InvalidEmail> {

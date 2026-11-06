@@ -27,6 +27,7 @@ impl MailboxMessageIdentity {
 pub struct MailboxMessage {
     pub id: i64,
     pub action_id: Option<i64>,
+    pub activation_id: Option<i64>,
     pub rejection_chain_key: Option<String>,
     pub rejection_service_handler_address: Option<String>,
     pub rejection_code: Option<String>,
@@ -175,8 +176,10 @@ impl ActionStore {
         Ok(sqlx::query_as(
             "SELECT m.* FROM action_mailbox_messages m
              LEFT JOIN actions a ON a.id=m.action_id
+             LEFT JOIN registration_activations r ON r.id=m.activation_id
              WHERE ((a.chain_key=$1 AND a.service_handler_address=$2)
-                OR (m.rejection_chain_key=$1 AND m.rejection_service_handler_address=$2))
+                OR (m.rejection_chain_key=$1 AND m.rejection_service_handler_address=$2)
+                OR (r.chain_key=$1 AND r.service_handler_address=$2))
              AND m.acknowledgment_status='pending' AND m.next_attempt_at <= now()
              ORDER BY m.next_attempt_at, m.id LIMIT $3",
         )
@@ -223,7 +226,10 @@ impl ActionStore {
         let current: Option<MailboxMessage> = sqlx::query_as(
             "SELECT * FROM action_mailbox_messages WHERE id=$1
              AND (action_id=$2 OR (action_id IS NULL AND $2::bigint IS NULL
-                  AND rejection_chain_key=$3 AND rejection_service_handler_address=$4))
+                  AND ((rejection_chain_key=$3 AND rejection_service_handler_address=$4)
+                       OR EXISTS (SELECT 1 FROM registration_activations r
+                                  WHERE r.id=activation_id AND r.chain_key=$3
+                                  AND r.service_handler_address=$4))))
              FOR UPDATE",
         )
         .bind(message_id)

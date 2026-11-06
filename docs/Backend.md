@@ -116,7 +116,8 @@ lowercases only its domain before hashing. Registration, incoming emails, and CL
 registration therefore use the same ID for domain capitalization variants, such
 as `Alice@EXAMPLE.COM` and `Alice@example.com`. Local-part case is preserved:
 `Alice@example.com` and `alice@example.com` are separate identities. The stored
-registration email may retain the submitted spelling. There is no email verification.
+registration email may retain the submitted spelling. Provisioning does not require
+email verification; activation is tracked separately as described below.
 The caller cannot choose a proxy, admin, control center, or chain.
 
 - `202`: new registration or explicitly requested retry queued.
@@ -142,6 +143,8 @@ not secrets or proof of email ownership.
   "proxy_address": "<chain address>",
   "tx_hash": "<hash>",
   "error_code": null,
+  "activated_at": null,
+  "activation_error_code": null,
   "created_at": "<UTC timestamp>",
   "updated_at": "<UTC timestamp>"
 }
@@ -150,6 +153,53 @@ not secrets or proof of email ownership.
 Email addresses are stored in Postgres but excluded from responses. Internal RPC
 errors and credentials are not returned. Access to Postgres includes access to
 email addresses; restrict it accordingly.
+
+### Activate by email
+
+After requesting registration, the user sends an email from that same mailbox to
+the configured operator inbox with subject `activate` (case-insensitive, no arguments).
+The operator applies the same DKIM checks as for deposit and withdrawal commands.
+It sends the result to the protected endpoint
+`POST /v1/registrations/{user_id}/activation`:
+
+```json
+{
+  "verified": true,
+  "error_code": null,
+  "mailbox_message": { "folder": "INBOX", "uid_validity": 100, "uid": 12 }
+}
+```
+
+The operator derives `user_id` from the email's From header, using the shared ID
+helper. Only trusted operators should report verification results; this endpoint
+trusts their bearer-authenticated result and does not verify DKIM itself.
+For a permanent verification failure it reports `verified: false` with a stable
+`error_code`, such as `email_authentication_failed`. Temporary DNS failures retain
+the existing retry behavior and do not immediately report failure.
+
+The response is the saved activation report, including `id`, deployment scope,
+`user_id`, result, mailbox identity and `created_at`. Identical reports return
+`200`; new reports return `201`. Invalid reports return `400`, missing registrations
+return `404`, and a mailbox identity already assigned to another result returns
+`409`. Activation never creates a registration or broadcasts a transaction.
+Emails from unregistered users are rejected and acknowledged; the user must first
+request registration and then send a new activation email.
+
+A successful report sets `activated_at`. A failed report logs the failure and sets
+`activation_error_code` only while inactive. Later failures never deactivate a user,
+and repeating an old report never overwrites newer state. Each report and its IMAP
+acknowledgment request are committed atomically. The backend's existing mailbox
+worker then marks the activation email read, without waiting for a chain action.
+Operators cache the email only after the API confirms the report or rejection.
+
+The external frontend should offer funding instructions only when
+`status == "completed"` **and** `activated_at != null`. Until then, show provisioning
+or activation progress and poll the existing registration status/lookup endpoint.
+Activation is an onboarding check, not an on-chain permission or a guarantee that
+future emails will verify. This repository's frontend is unchanged.
+
+This development version updates the initial schema in place. Wipe the test
+database before starting the new backend; no incremental migration is provided.
 
 ### Look up registration by email
 

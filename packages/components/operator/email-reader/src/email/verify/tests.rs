@@ -73,6 +73,41 @@ fn assert_rejected(raw: &str) {
 }
 
 #[test]
+fn activation_requires_the_same_authentication_as_fund_commands() {
+    let raw = RAW.replace("Subject: deposit", "Subject: activate");
+    let valid = signed(&raw);
+    let email = EmailMessage::parse_imap(valid.as_bytes()).unwrap();
+    assert!(email.is_activation());
+    email.validate_subject().unwrap();
+    verify(&valid).unwrap();
+    assert_rejected(&raw);
+    assert_rejected(&signed(RAW).replace("Subject: deposit", "Subject: activate"));
+    assert_rejected(&valid.replace("Alice@example.com", "victim@example.com"));
+    let unsigned_subject = format!(
+        "{}\r\n{raw}",
+        signature(&raw, "example.com", "test", &["From", "Message-ID", "Date"])
+    );
+    assert_rejected(&unsigned_subject);
+    let unavailable = format!(
+        "{}\r\n{raw}",
+        signature(&raw, "example.com", "down", HEADERS)
+    );
+    assert!(matches!(
+        verify(&unavailable),
+        Err(AppError::VerificationUnavailable)
+    ));
+    for subject in ["Re: activate", "activate extra", "registration"] {
+        let raw = RAW.replace("Subject: deposit", &format!("Subject: {subject}"));
+        let email = EmailMessage::parse_imap(raw.as_bytes()).unwrap();
+        assert!(!email.is_activation());
+        assert_eq!(
+            email.validate_subject().unwrap_err(),
+            InvalidEmail::SubjectInvalid
+        );
+    }
+}
+
+#[test]
 fn accepts_real_signature_and_rejects_unsigned_wrong_domain_or_tampered_mail() {
     let valid = signed(RAW);
     verify(&valid).unwrap();

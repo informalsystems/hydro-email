@@ -27,6 +27,30 @@ pub struct RejectionRecord {
     pub uid: u32,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct ActivationRecord {
+    pub id: i64,
+    pub chain_key: String,
+    pub service_handler_address: String,
+    pub user_id: String,
+    pub verified: bool,
+    pub error_code: Option<String>,
+    pub folder: String,
+    pub uid_validity: u32,
+    pub uid: u32,
+}
+
+#[derive(Debug)]
+pub struct BackendHttpError(pub u16);
+
+impl std::fmt::Display for BackendHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Backend API returned HTTP {}", self.0)
+    }
+}
+
+impl std::error::Error for BackendHttpError {}
+
 pub struct BackendClient {
     base_url: String,
     api_key: String,
@@ -89,6 +113,18 @@ impl BackendClient {
         self.post_json("/v1/mailbox-rejections", Some(body)).await
     }
 
+    pub async fn report_activation(&self, user_id: &str, body: Value) -> Result<ActivationRecord> {
+        ensure!(
+            user_id.len() == 64 && user_id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "Invalid user ID"
+        );
+        self.post_json(
+            &format!("/v1/registrations/{user_id}/activation"),
+            Some(body),
+        )
+        .await
+    }
+
     async fn post_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
@@ -104,11 +140,9 @@ impl BackendClient {
             .send(request)
             .await
             .map_err(|_| anyhow::anyhow!("Backend API request failed"))?;
-        ensure!(
-            matches!(response.status().as_u16(), 200 | 201),
-            "Backend API returned HTTP {}",
-            response.status().as_u16()
-        );
+        if !matches!(response.status().as_u16(), 200 | 201) {
+            return Err(BackendHttpError(response.status().as_u16()).into());
+        }
         let mut bytes = Vec::new();
         let mut body = response.into_body().into_boxed_body();
         while let Some(frame) = body.frame().await {

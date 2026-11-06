@@ -11,6 +11,8 @@ CREATE TABLE registrations (
     proxy_address TEXT,
     tx_hash TEXT,
     error_code TEXT,
+    activated_at TIMESTAMPTZ,
+    activation_error_code TEXT CHECK (activation_error_code ~ '^[a-z0-9_]{1,64}$'),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     next_check_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -46,6 +48,25 @@ CREATE TABLE registration_attempts (
     tx_hash TEXT,
     attempted_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (chain_key, registry_address, user_id, attempt_number),
+    FOREIGN KEY (chain_key, registry_address, user_id)
+        REFERENCES registrations (chain_key, registry_address, user_id)
+);
+
+-- Operator reports are immutable; no raw emails or DKIM credentials are stored.
+CREATE TABLE registration_activations (
+    id BIGSERIAL PRIMARY KEY,
+    chain_key TEXT NOT NULL,
+    registry_address TEXT NOT NULL,
+    service_handler_address TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    verified BOOLEAN NOT NULL,
+    error_code TEXT CHECK (error_code ~ '^[a-z0-9_]{1,64}$'),
+    folder TEXT NOT NULL,
+    uid_validity BIGINT NOT NULL,
+    uid BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CHECK ((verified AND error_code IS NULL) OR (NOT verified AND error_code IS NOT NULL)),
+    UNIQUE (folder, uid_validity, uid),
     FOREIGN KEY (chain_key, registry_address, user_id)
         REFERENCES registrations (chain_key, registry_address, user_id)
 );
